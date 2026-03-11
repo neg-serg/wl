@@ -1,0 +1,26 @@
+[package]
+name = "swww-vulkan-daemon"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "swww-vulkan-daemon"
+path = "src/main.rs"
+
+[dependencies]
+swww-vulkan-common = { path = "../common" }
+ash = "0.38"
+wayland-client = { version = "0.31", features = ["system"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-sys = { version = "0.31", features = ["client"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+nix = { version = "0.29", features = ["fs", "socket", "mman"] }
+
+[build-dependencies]
