@@ -69,10 +69,6 @@ fn builtin_shaders() -> Vec<(&'static str, &'static [u8])> {
             include_shader!("transition_hexagonalize.frag.spv"),
         ),
         (
-            "transition_kaleidoscope.frag",
-            include_shader!("transition_kaleidoscope.frag.spv"),
-        ),
-        (
             "transition_cross_zoom.frag",
             include_shader!("transition_cross_zoom.frag.spv"),
         ),

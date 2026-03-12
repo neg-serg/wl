@@ -49,7 +49,6 @@ pub enum TransitionType {
     GlitchMemories,
     Morph,
     Hexagonalize,
-    Kaleidoscope,
     CrossZoom,
     FilmBurn,
     CircleCrop,
