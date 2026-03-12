@@ -74,7 +74,7 @@ impl Default for TransitionParams {
             transition_type: TransitionType::None,
             duration_secs: 3.0,
             step: 90,
-            fps: 30,
+            fps: 240,
             angle: 45.0,
             position: (0.5, 0.5),
             bezier: [0.25, 0.1, 0.25, 1.0],
