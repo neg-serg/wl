@@ -57,48 +57,12 @@ fn builtin_shaders() -> Vec<(&'static str, &'static [u8])> {
             include_shader!("transition_dreamy.frag.spv"),
         ),
         (
-            "transition_swirl.frag",
-            include_shader!("transition_swirl.frag.spv"),
-        ),
-        (
             "transition_glitch_memories.frag",
             include_shader!("transition_glitch_memories.frag.spv"),
         ),
         (
-            "transition_window_blinds.frag",
-            include_shader!("transition_window_blinds.frag.spv"),
-        ),
-        (
-            "transition_radial.frag",
-            include_shader!("transition_radial.frag.spv"),
-        ),
-        (
-            "transition_pinwheel.frag",
-            include_shader!("transition_pinwheel.frag.spv"),
-        ),
-        (
             "transition_morph.frag",
             include_shader!("transition_morph.frag.spv"),
-        ),
-        (
-            "transition_wind.frag",
-            include_shader!("transition_wind.frag.spv"),
-        ),
-        (
-            "transition_ripple.frag",
-            include_shader!("transition_ripple.frag.spv"),
-        ),
-        (
-            "transition_water_drop.frag",
-            include_shader!("transition_water_drop.frag.spv"),
-        ),
-        (
-            "transition_squeeze.frag",
-            include_shader!("transition_squeeze.frag.spv"),
-        ),
-        (
-            "transition_doorway.frag",
-            include_shader!("transition_doorway.frag.spv"),
         ),
         (
             "transition_hexagonalize.frag",
@@ -109,44 +73,12 @@ fn builtin_shaders() -> Vec<(&'static str, &'static [u8])> {
             include_shader!("transition_kaleidoscope.frag.spv"),
         ),
         (
-            "transition_book_flip.frag",
-            include_shader!("transition_book_flip.frag.spv"),
-        ),
-        (
-            "transition_doom.frag",
-            include_shader!("transition_doom.frag.spv"),
-        ),
-        (
-            "transition_rolls.frag",
-            include_shader!("transition_rolls.frag.spv"),
-        ),
-        (
-            "transition_bounce.frag",
-            include_shader!("transition_bounce.frag.spv"),
-        ),
-        (
-            "transition_polka_dots.frag",
-            include_shader!("transition_polka_dots.frag.spv"),
-        ),
-        (
-            "transition_cube.frag",
-            include_shader!("transition_cube.frag.spv"),
-        ),
-        (
-            "transition_swap.frag",
-            include_shader!("transition_swap.frag.spv"),
-        ),
-        (
             "transition_cross_zoom.frag",
             include_shader!("transition_cross_zoom.frag.spv"),
         ),
         (
             "transition_film_burn.frag",
             include_shader!("transition_film_burn.frag.spv"),
-        ),
-        (
-            "transition_grid_flip.frag",
-            include_shader!("transition_grid_flip.frag.spv"),
         ),
         (
             "transition_circle_crop.frag",
