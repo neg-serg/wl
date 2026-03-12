@@ -45,20 +45,42 @@ bool apply_resize(inout vec2 uv, uint resize_mode, float img_aspect, float scr_a
     return true;
 }
 
+float hash(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
 void main() {
-    // Pixelation intensity: peaks at progress=0.5, zero at 0.0 and 1.0
-    float intensity = 1.0 - abs(2.0 * pc.progress - 1.0);
+    // Per-region noise: different areas pixelate at different times
+    // Use coarse grid (8x6 regions) for the "torn" look
+    vec2 region = floor(v_uv * vec2(8.0, 6.0));
+    float region_noise = hash(region);
 
-    // Use power-of-2 grid sizes for stable block boundaries between frames
-    // intensity 0→1: level goes 0→6, grid goes 256→4
-    float level = round(intensity * 6.0);
-    float grid_size = 256.0 / pow(2.0, level);
+    // Each region has its own progress offset — creates jagged/torn timing
+    float region_progress = clamp(pc.progress * 1.6 - region_noise * 0.6, 0.0, 1.0);
 
-    // Quantize UVs to cell centers (not corners) for stability
+    // Pixelation intensity: peaks at region midpoint
+    float intensity = 1.0 - abs(2.0 * region_progress - 1.0);
+
+    // Sharper pixelation steps: fewer levels, bigger jumps
+    float level = round(intensity * 4.0);
+    float grid_size = 128.0 / pow(2.0, level);
+
+    // Quantize UVs to cell centers
     vec2 pixelated_uv = (floor(v_uv * grid_size) + 0.5) / grid_size;
 
-    // Wide smooth crossfade — image swap is hidden by pixelation
-    float blend = smoothstep(0.25, 0.75, pc.progress);
+    // Per-block swap decision: each block flips independently based on noise
+    vec2 block_id = floor(v_uv * grid_size);
+    float block_noise = hash(block_id + vec2(37.0, 91.0));
+
+    // Hard per-block switch — no smooth blend, abrupt "torn" flips
+    float block_threshold = pc.progress * 1.3 - block_noise * 0.3;
+    float show_new = step(0.5, block_threshold);
+
+    // When fully pixelated, swap happens hidden by the mosaic
+    // When region is mostly done, force new image
+    if (region_progress > 0.85) show_new = 1.0;
 
     vec2 old_uv = pixelated_uv;
     vec2 new_uv = pixelated_uv;
@@ -71,5 +93,5 @@ void main() {
     if (apply_resize(new_uv, pc.new_resize_mode, pc.new_img_aspect, pc.screen_aspect))
         new_color = texture(u_new, new_uv);
 
-    f_color = mix(old_color, new_color, blend);
+    f_color = mix(old_color, new_color, show_new);
 }

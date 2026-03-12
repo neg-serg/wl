@@ -161,14 +161,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let frag_modules: Vec<(TransitionKind, _)> = [
             (TransitionKind::Fade, "transition_fade.frag"),
             (TransitionKind::Wipe, "transition_wipe.frag"),
-            (TransitionKind::Grow, "transition_grow.frag"),
             (TransitionKind::Wave, "transition_wave.frag"),
             (TransitionKind::Outer, "transition_outer.frag"),
             (TransitionKind::Pixelate, "transition_pixelate.frag"),
-            (TransitionKind::Swirl, "transition_swirl.frag"),
-            (TransitionKind::Blinds, "transition_blinds.frag"),
-            (TransitionKind::Diamond, "transition_diamond.frag"),
-            (TransitionKind::Dissolve, "transition_dissolve.frag"),
+            (TransitionKind::Burn, "transition_burn.frag"),
+            (TransitionKind::Glitch, "transition_glitch.frag"),
+            (TransitionKind::Disintegrate, "transition_disintegrate.frag"),
         ]
         .into_iter()
         .filter_map(|(kind, name)| shaders.get(name).map(|m| (kind, m)))

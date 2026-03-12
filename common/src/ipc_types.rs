@@ -39,14 +39,12 @@ pub enum IpcCommand {
 pub enum TransitionType {
     Fade,
     Wipe,
-    Grow,
     Wave,
     Outer,
     Pixelate,
-    Swirl,
-    Blinds,
-    Diamond,
-    Dissolve,
+    Burn,
+    Glitch,
+    Disintegrate,
     Random,
     None,
 }

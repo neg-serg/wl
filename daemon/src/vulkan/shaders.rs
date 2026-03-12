@@ -29,16 +29,28 @@ fn builtin_shaders() -> Vec<(&'static str, &'static [u8])> {
             include_shader!("transition_wipe.frag.spv"),
         ),
         (
-            "transition_grow.frag",
-            include_shader!("transition_grow.frag.spv"),
-        ),
-        (
             "transition_wave.frag",
             include_shader!("transition_wave.frag.spv"),
         ),
         (
             "transition_outer.frag",
             include_shader!("transition_outer.frag.spv"),
+        ),
+        (
+            "transition_pixelate.frag",
+            include_shader!("transition_pixelate.frag.spv"),
+        ),
+        (
+            "transition_burn.frag",
+            include_shader!("transition_burn.frag.spv"),
+        ),
+        (
+            "transition_glitch.frag",
+            include_shader!("transition_glitch.frag.spv"),
+        ),
+        (
+            "transition_disintegrate.frag",
+            include_shader!("transition_disintegrate.frag.spv"),
         ),
     ]
 }

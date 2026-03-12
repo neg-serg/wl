@@ -457,14 +457,12 @@ pub struct TransitionPipeline {
 pub enum TransitionKind {
     Fade,
     Wipe,
-    Grow,
     Wave,
     Outer,
     Pixelate,
-    Swirl,
-    Blinds,
-    Diamond,
-    Dissolve,
+    Burn,
+    Glitch,
+    Disintegrate,
 }
 
 impl TransitionPipeline {

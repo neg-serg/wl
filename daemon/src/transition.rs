@@ -11,14 +11,12 @@ pub fn resolve_kind(tt: TransitionType) -> Option<TransitionKind> {
     match tt {
         TransitionType::Fade => Some(TransitionKind::Fade),
         TransitionType::Wipe => Some(TransitionKind::Wipe),
-        TransitionType::Grow => Some(TransitionKind::Grow),
         TransitionType::Wave => Some(TransitionKind::Wave),
         TransitionType::Outer => Some(TransitionKind::Outer),
         TransitionType::Pixelate => Some(TransitionKind::Pixelate),
-        TransitionType::Swirl => Some(TransitionKind::Swirl),
-        TransitionType::Blinds => Some(TransitionKind::Blinds),
-        TransitionType::Diamond => Some(TransitionKind::Diamond),
-        TransitionType::Dissolve => Some(TransitionKind::Dissolve),
+        TransitionType::Burn => Some(TransitionKind::Burn),
+        TransitionType::Glitch => Some(TransitionKind::Glitch),
+        TransitionType::Disintegrate => Some(TransitionKind::Disintegrate),
         TransitionType::Random => Some(pick_random()),
         TransitionType::None => None,
     }
@@ -28,14 +26,12 @@ fn pick_random() -> TransitionKind {
     let choices = [
         TransitionKind::Fade,
         TransitionKind::Wipe,
-        TransitionKind::Grow,
         TransitionKind::Wave,
         TransitionKind::Outer,
         TransitionKind::Pixelate,
-        TransitionKind::Swirl,
-        TransitionKind::Blinds,
-        TransitionKind::Diamond,
-        TransitionKind::Dissolve,
+        TransitionKind::Burn,
+        TransitionKind::Glitch,
+        TransitionKind::Disintegrate,
     ];
     // Simple pseudo-random using time nanos
     let nanos = Instant::now().elapsed().subsec_nanos() as usize;
@@ -60,14 +56,12 @@ pub fn create_transition(
         transition_type: match kind {
             TransitionKind::Fade => TransitionType::Fade,
             TransitionKind::Wipe => TransitionType::Wipe,
-            TransitionKind::Grow => TransitionType::Grow,
             TransitionKind::Wave => TransitionType::Wave,
             TransitionKind::Outer => TransitionType::Outer,
             TransitionKind::Pixelate => TransitionType::Pixelate,
-            TransitionKind::Swirl => TransitionType::Swirl,
-            TransitionKind::Blinds => TransitionType::Blinds,
-            TransitionKind::Diamond => TransitionType::Diamond,
-            TransitionKind::Dissolve => TransitionType::Dissolve,
+            TransitionKind::Burn => TransitionType::Burn,
+            TransitionKind::Glitch => TransitionType::Glitch,
+            TransitionKind::Disintegrate => TransitionType::Disintegrate,
         },
         kind,
         duration_secs: params.duration_secs,
