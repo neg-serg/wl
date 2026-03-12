@@ -63,7 +63,9 @@ vec4 getToColor(vec2 uv) {
 }
 
 const int steps = 50;
-const float horizontalHexagons = 20.0;
+const float horizontalHexagons = 50.0;
+const float edgeWidth = 0.15;
+const vec3 edgeColor = vec3(1.0, 1.0, 1.0);
 
 struct Hexagon {
     float q;
@@ -122,9 +124,26 @@ vec4 transition(vec2 uv) {
 
     float size = (sqrt(3.0) / 3.0) * dist / horizontalHexagons;
 
-    vec2 point = dist > 0.0 ? pointFromHexagon(hexagonFromPoint(uv, size), size) : uv;
+    if (dist <= 0.0) {
+        return mix(getFromColor(uv), getToColor(uv), pc.progress);
+    }
 
-    return mix(getFromColor(point), getToColor(point), pc.progress);
+    Hexagon hex = hexagonFromPoint(uv, size);
+    vec2 center = pointFromHexagon(hex, size);
+
+    // Distance from pixel to hex center (normalized by size)
+    vec2 delta = uv - center;
+    delta.y /= pc.screen_aspect;
+    float d = length(delta) / size;
+
+    // Edge glow: bright outline at hex boundaries, fades with transition progress
+    float edge = smoothstep(1.0 - edgeWidth, 1.0, d);
+    float edgeIntensity = dist * edge;
+
+    vec4 color = mix(getFromColor(center), getToColor(center), pc.progress);
+    color.rgb = mix(color.rgb, edgeColor, edgeIntensity);
+
+    return color;
 }
 
 void main() {
