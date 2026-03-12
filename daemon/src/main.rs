@@ -743,13 +743,10 @@ fn set_static_wallpaper(
                     is_animated: false,
                 };
 
-                // Clear animation if switching from animated to static
-                if let Some(old_anim) = output.animation.take() {
-                    // SAFETY: GPU is idle.
-                    unsafe {
-                        old_anim.atlas.destroy(&daemon.vk.device);
-                    }
-                }
+                // Clear animation state. Do NOT destroy the atlas here —
+                // its handles are now owned by transition.old_texture and
+                // will be freed in complete_transition().
+                output.animation = None;
 
                 output.wallpaper = Some(new_wallpaper);
                 output.transition = Some(t);
