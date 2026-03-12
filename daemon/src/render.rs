@@ -91,6 +91,14 @@ pub unsafe fn render_frame(
             let descriptor_set = transition.descriptor_set.unwrap();
             let framebuffer = output.framebuffers[image_index as usize];
 
+            let resize_to_u32 = |m: swww_vulkan_common::ipc_types::ResizeMode| -> u32 {
+                match m {
+                    swww_vulkan_common::ipc_types::ResizeMode::Crop => 0,
+                    swww_vulkan_common::ipc_types::ResizeMode::Fit => 1,
+                    swww_vulkan_common::ipc_types::ResizeMode::No => 2,
+                }
+            };
+
             let push_constants = TransitionPushConstants {
                 progress: transition.progress,
                 angle: transition.angle,
@@ -98,6 +106,13 @@ pub unsafe fn render_frame(
                 pos_y: transition.position.1,
                 wave_x: transition.wave.0,
                 wave_y: transition.wave.1,
+                old_resize_mode: resize_to_u32(transition.old_resize_mode),
+                old_img_aspect: transition.old_texture.width as f32
+                    / transition.old_texture.height as f32,
+                new_resize_mode: resize_to_u32(transition.new_resize_mode),
+                new_img_aspect: transition.new_texture.width as f32
+                    / transition.new_texture.height as f32,
+                screen_aspect: extent.width as f32 / extent.height as f32,
             };
 
             // SAFETY: All handles valid, transition pipeline and descriptor set are set up.

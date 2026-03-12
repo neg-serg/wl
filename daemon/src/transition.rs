@@ -42,7 +42,9 @@ pub fn create_transition(
     params: &TransitionParams,
     kind: TransitionKind,
     old_texture: GpuTexture,
+    old_resize_mode: swww_vulkan_common::ipc_types::ResizeMode,
     new_texture: GpuTexture,
+    new_resize_mode: swww_vulkan_common::ipc_types::ResizeMode,
 ) -> TransitionState {
     TransitionState {
         transition_type: match kind {
@@ -62,7 +64,9 @@ pub fn create_transition(
         bezier: params.bezier,
         wave: params.wave,
         old_texture,
+        old_resize_mode,
         new_texture,
+        new_resize_mode,
         descriptor_set: None,
     }
 }

@@ -84,7 +84,9 @@ pub struct TransitionState {
     pub bezier: [f32; 4],
     pub wave: (f32, f32),
     pub old_texture: GpuTexture,
+    pub old_resize_mode: swww_vulkan_common::ipc_types::ResizeMode,
     pub new_texture: GpuTexture,
+    pub new_resize_mode: swww_vulkan_common::ipc_types::ResizeMode,
     pub descriptor_set: Option<vk::DescriptorSet>,
 }
 

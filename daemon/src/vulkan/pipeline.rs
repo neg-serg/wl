@@ -433,6 +433,12 @@ pub struct TransitionPushConstants {
     pub pos_y: f32,
     pub wave_x: f32,
     pub wave_y: f32,
+    // Resize params so transitions match the final wallpaper scaling
+    pub old_resize_mode: u32,
+    pub old_img_aspect: f32,
+    pub new_resize_mode: u32,
+    pub new_img_aspect: f32,
+    pub screen_aspect: f32,
 }
 
 /// Owns Vulkan pipeline state for transition rendering.

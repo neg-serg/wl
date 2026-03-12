@@ -671,6 +671,7 @@ fn set_static_wallpaper(
 
                 // Steal old wallpaper texture handles for the transition
                 let old_wp = output.wallpaper.as_ref().unwrap();
+                let old_resize_mode = old_wp.resize_mode;
                 let old_texture = output::GpuTexture {
                     image: old_wp.texture.image,
                     view: old_wp.texture.view,
@@ -679,8 +680,14 @@ fn set_static_wallpaper(
                     height: old_wp.texture.height,
                 };
 
-                let mut t =
-                    transition::create_transition(transition_params, kind, old_texture, gpu_tex);
+                let mut t = transition::create_transition(
+                    transition_params,
+                    kind,
+                    old_texture,
+                    old_resize_mode,
+                    gpu_tex,
+                    resize,
+                );
 
                 if let Some(ref tp) = daemon.transition_pipeline {
                     match tp.allocate_descriptor_set(&daemon.vk.device) {
