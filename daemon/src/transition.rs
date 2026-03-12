@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use getrandom::fill;
 use swww_vulkan_common::ipc_types::{TransitionParams, TransitionType};
 
 use crate::output::{GpuTexture, TransitionState};
@@ -35,7 +36,6 @@ fn pick_random() -> TransitionKind {
         TransitionKind::Fade,
         TransitionKind::Wave,
         TransitionKind::Outer,
-        TransitionKind::Pixelate,
         TransitionKind::Burn,
         TransitionKind::Glitch,
         TransitionKind::Disintegrate,
@@ -48,14 +48,10 @@ fn pick_random() -> TransitionKind {
         TransitionKind::FilmBurn,
         TransitionKind::CircleCrop,
     ];
-    // Simple pseudo-random using time nanos
-    let nanos = Instant::now().elapsed().subsec_nanos() as usize;
-    // Mix with system time for better distribution
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos() as usize;
-    choices[(nanos ^ now) % choices.len()]
+    let mut buf = [0u8; 8];
+    fill(&mut buf).expect("getrandom failed");
+    let idx = usize::from_le_bytes(buf) % choices.len();
+    choices[idx]
 }
 
 /// Create a new TransitionState from IPC params and textures.

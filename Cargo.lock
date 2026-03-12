@@ -1570,6 +1570,7 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "bincode",
+ "getrandom 0.3.4",
  "nix",
  "serde",
  "serde_json",
