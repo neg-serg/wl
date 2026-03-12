@@ -57,9 +57,10 @@ pub enum Commands {
         #[arg(long, default_value = "20,20")]
         transition_wave: String,
 
-        /// Upscale low-resolution images using a neural network before display
-        #[arg(long)]
-        upscale: bool,
+        /// Upscale low-resolution images using a neural network before display.
+        /// Values: once (default), always (persist), never (skip), off (disable persistent)
+        #[arg(long, num_args(0..=1), default_missing_value = "once")]
+        upscale: Option<UpscaleMode>,
 
         /// Custom upscaler command (implies --upscale).
         /// Use {input} and {output} placeholders, or paths are appended as arguments.
@@ -111,6 +112,18 @@ pub enum ResizeArg {
 }
 
 #[derive(Clone, ValueEnum)]
+pub enum UpscaleMode {
+    /// Upscale this image only (default when --upscale is used without a value)
+    Once,
+    /// Enable persistent upscaling for all future images
+    Always,
+    /// Skip upscaling for this image (don't change persistent setting)
+    Never,
+    /// Disable persistent upscaling
+    Off,
+}
+
+#[derive(Clone, ValueEnum)]
 pub enum TransitionTypeArg {
     Fade,
     Wipe,
@@ -124,7 +137,6 @@ pub enum TransitionTypeArg {
     GlitchMemories,
     Morph,
     Hexagonalize,
-    Kaleidoscope,
     CrossZoom,
     FilmBurn,
     CircleCrop,
@@ -165,7 +177,6 @@ impl From<TransitionTypeArg> for swww_vulkan_common::ipc_types::TransitionType {
             TransitionTypeArg::GlitchMemories => Self::GlitchMemories,
             TransitionTypeArg::Morph => Self::Morph,
             TransitionTypeArg::Hexagonalize => Self::Hexagonalize,
-            TransitionTypeArg::Kaleidoscope => Self::Kaleidoscope,
             TransitionTypeArg::CrossZoom => Self::CrossZoom,
             TransitionTypeArg::FilmBurn => Self::FilmBurn,
             TransitionTypeArg::CircleCrop => Self::CircleCrop,

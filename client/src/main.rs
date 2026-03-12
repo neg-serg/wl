@@ -5,6 +5,7 @@ mod upscale;
 
 use clap::Parser;
 
+use swww_vulkan_common::cache::{UpscalePrefs, load_upscale_prefs, save_upscale_prefs};
 use swww_vulkan_common::ipc_types::*;
 
 use crate::cli::*;
@@ -51,9 +52,18 @@ async fn run(cli: Cli) -> Result<(), String> {
             let wave = parse_wave(&transition_wave)?;
             let parsed_outputs = parse_outputs(&outputs);
 
-            // Apply upscaling if requested.
-            let final_path = if upscale || upscale_cmd.is_some() || upscale_scale.is_some() {
-                upscale::upscale_image(&path, &upscale_cmd, &upscale_scale, &parsed_outputs).await
+            // Resolve upscale mode from CLI flag + persistent prefs.
+            let prefs = load_upscale_prefs();
+            let (should_upscale, effective_cmd, effective_scale) = resolve_upscale(
+                &upscale,
+                &upscale_cmd,
+                &upscale_scale,
+                &prefs,
+            );
+
+            let final_path = if should_upscale {
+                upscale::upscale_image(&path, &effective_cmd, &effective_scale, &parsed_outputs)
+                    .await
             } else {
                 path
             };
@@ -145,5 +155,60 @@ async fn send_and_check(cmd: IpcCommand) -> Result<(), String> {
         IpcResponse::Ok => Ok(()),
         IpcResponse::Error { message } => Err(message),
         _ => Err("unexpected response from daemon".to_string()),
+    }
+}
+
+/// Resolve whether to upscale and with what parameters, based on CLI flags and persistent prefs.
+/// Returns (should_upscale, effective_cmd, effective_scale).
+fn resolve_upscale(
+    mode: &Option<UpscaleMode>,
+    cli_cmd: &Option<String>,
+    cli_scale: &Option<u8>,
+    prefs: &UpscalePrefs,
+) -> (bool, Option<String>, Option<u8>) {
+    // If --upscale-cmd or --upscale-scale provided without --upscale, treat as "once".
+    let effective_mode = if mode.is_none() && (cli_cmd.is_some() || cli_scale.is_some()) {
+        Some(UpscaleMode::Once)
+    } else {
+        mode.clone()
+    };
+
+    match effective_mode {
+        Some(UpscaleMode::Always) => {
+            // Save prefs with current CLI params (full replace).
+            let new_prefs = UpscalePrefs {
+                enabled: true,
+                custom_cmd: cli_cmd.clone(),
+                scale: *cli_scale,
+            };
+            save_upscale_prefs(&new_prefs);
+            (true, cli_cmd.clone(), *cli_scale)
+        }
+        Some(UpscaleMode::Off) => {
+            // Disable persistent mode.
+            let new_prefs = UpscalePrefs {
+                enabled: false,
+                custom_cmd: None,
+                scale: None,
+            };
+            save_upscale_prefs(&new_prefs);
+            (false, None, None)
+        }
+        Some(UpscaleMode::Once) => {
+            // Upscale this image only, don't change prefs.
+            (true, cli_cmd.clone(), *cli_scale)
+        }
+        Some(UpscaleMode::Never) => {
+            // Skip upscaling, don't change prefs.
+            (false, None, None)
+        }
+        None => {
+            // No --upscale flag: use persistent prefs.
+            if prefs.enabled {
+                (true, prefs.custom_cmd.clone(), prefs.scale)
+            } else {
+                (false, None, None)
+            }
+        }
     }
 }

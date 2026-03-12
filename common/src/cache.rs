@@ -127,6 +127,50 @@ pub fn save_session_state(state: &SessionState) -> Result<(), std::io::Error> {
 }
 
 // ---------------------------------------------------------------------------
+// Upscale preferences (persistent mode)
+// ---------------------------------------------------------------------------
+
+const UPSCALE_PREFS_FILE: &str = "upscale-prefs.json";
+
+/// Persistent user preference for automatic upscaling.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UpscalePrefs {
+    pub enabled: bool,
+    #[serde(default)]
+    pub custom_cmd: Option<String>,
+    #[serde(default)]
+    pub scale: Option<u8>,
+}
+
+/// Load upscale preferences from the state directory.
+/// Returns default (disabled) if file does not exist.
+pub fn load_upscale_prefs() -> UpscalePrefs {
+    let path = state_dir().join(UPSCALE_PREFS_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+        Err(_) => UpscalePrefs::default(),
+    }
+}
+
+/// Save upscale preferences to the state directory.
+pub fn save_upscale_prefs(prefs: &UpscalePrefs) {
+    let dir = state_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("Warning: failed to create state directory: {e}");
+        return;
+    }
+    let path = dir.join(UPSCALE_PREFS_FILE);
+    match serde_json::to_string_pretty(prefs) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                eprintln!("Warning: failed to save upscale preferences: {e}");
+            }
+        }
+        Err(e) => eprintln!("Warning: failed to serialize upscale preferences: {e}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Upscale cache types
 // ---------------------------------------------------------------------------
 
