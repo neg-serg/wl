@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use swww_vulkan_common::cache::{self, OutputSessionState, SessionState};
-use swww_vulkan_common::ipc_types::ResizeMode;
+use wl_common::cache::{self, OutputSessionState, SessionState};
+use wl_common::ipc_types::ResizeMode;
 
 use crate::output::Output;
 use crate::vulkan::VulkanContext;

@@ -1,14 +1,14 @@
 [package]
-name = "swww-vulkan"
+name = "wl"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "swww-vulkan"
+name = "wl"
 path = "src/main.rs"
 
 [dependencies]
-swww-vulkan-common = { path = "../common" }
+wl-common = { path = "../common" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 nix = { version = "0.29", features = ["fs", "socket", "mman"] }

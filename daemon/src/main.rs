@@ -12,7 +12,7 @@ use std::path::Path;
 
 use tracing::{error, info, warn};
 
-use swww_vulkan_common::ipc_types::*;
+use wl_common::ipc_types::*;
 
 use crate::ipc::IpcServer;
 use crate::output::{Output, Wallpaper};
@@ -41,7 +41,7 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    info!("swww-vulkan-daemon starting");
+    info!("wl-daemon starting");
 
     // 1. Connect to Wayland
     let mut wl = WaylandState::connect().map_err(|e| format!("wayland: {e}"))?;
@@ -212,8 +212,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         pipeline,
         transition_pipeline,
         outputs,
-        session_cache_path: swww_vulkan_common::cache::state_dir(),
-        image_cache_path: swww_vulkan_common::cache::cache_dir(),
+        session_cache_path: wl_common::cache::state_dir(),
+        image_cache_path: wl_common::cache::cache_dir(),
         running: true,
     };
 
@@ -443,7 +443,7 @@ fn handle_command(daemon: &mut DaemonState, cmd: IpcCommand) -> IpcResponse {
             }
             IpcResponse::Ok
         }
-        IpcCommand::ClearCache => match swww_vulkan_common::cache::clear_cache() {
+        IpcCommand::ClearCache => match wl_common::cache::clear_cache() {
             Ok(()) => IpcResponse::Ok,
             Err(e) => IpcResponse::Error {
                 message: format!("clear-cache failed: {e}"),
@@ -484,7 +484,7 @@ fn handle_img(
 
     if is_gif {
         // GIF animation path
-        let gif_frames = match swww_vulkan_common::image_decode::decode_gif_frames(img_path) {
+        let gif_frames = match wl_common::image_decode::decode_gif_frames(img_path) {
             Ok(f) => f,
             Err(e) => {
                 return IpcResponse::Error {
@@ -602,7 +602,7 @@ fn handle_img(
         }
     } else {
         // Static image path
-        let decoded = match swww_vulkan_common::image_decode::decode_to_rgba8(img_path) {
+        let decoded = match wl_common::image_decode::decode_to_rgba8(img_path) {
             Ok(img) => img,
             Err(e) => {
                 return IpcResponse::Error {
@@ -845,7 +845,7 @@ fn handle_clear(
 }
 
 fn handle_restore(daemon: &mut DaemonState) -> IpcResponse {
-    let state = match swww_vulkan_common::cache::load_session_state() {
+    let state = match wl_common::cache::load_session_state() {
         Ok(s) => s,
         Err(e) => {
             return IpcResponse::Error {

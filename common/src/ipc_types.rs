@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_IPC_PAYLOAD: usize = 65536;
 
 /// Unix domain socket name used by the daemon.
-pub const SOCKET_NAME: &str = "swww-vulkan.sock";
+pub const SOCKET_NAME: &str = "wl.sock";
 
 // ---------------------------------------------------------------------------
 // Commands (client -> daemon)

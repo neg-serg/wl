@@ -260,7 +260,7 @@ impl WaylandState {
             &surface,
             Some(&output.wl_output),
             zwlr_layer_shell_v1::Layer::Background,
-            "swww-vulkan".to_string(),
+            "wl".to_string(),
             &qh,
             (),
         );

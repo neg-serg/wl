@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
-use swww_vulkan_common::ipc_types::*;
+use wl_common::ipc_types::*;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -77,7 +77,7 @@ impl IpcServer {
     /// removed before binding.  If a live daemon is already listening the call
     /// returns `IpcError::DaemonAlreadyRunning`.
     pub async fn bind() -> Result<Self, IpcError> {
-        let socket_path = swww_vulkan_common::cache::socket_path();
+        let socket_path = wl_common::cache::socket_path();
 
         // Check for an existing socket file.
         if socket_path.exists() {

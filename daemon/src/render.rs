@@ -91,11 +91,11 @@ pub unsafe fn render_frame(
             let descriptor_set = transition.descriptor_set.unwrap();
             let framebuffer = output.framebuffers[image_index as usize];
 
-            let resize_to_u32 = |m: swww_vulkan_common::ipc_types::ResizeMode| -> u32 {
+            let resize_to_u32 = |m: wl_common::ipc_types::ResizeMode| -> u32 {
                 match m {
-                    swww_vulkan_common::ipc_types::ResizeMode::Crop => 0,
-                    swww_vulkan_common::ipc_types::ResizeMode::Fit => 1,
-                    swww_vulkan_common::ipc_types::ResizeMode::No => 2,
+                    wl_common::ipc_types::ResizeMode::Crop => 0,
+                    wl_common::ipc_types::ResizeMode::Fit => 1,
+                    wl_common::ipc_types::ResizeMode::No => 2,
                 }
             };
 
@@ -142,9 +142,9 @@ pub unsafe fn render_frame(
         let wallpaper = output.wallpaper.as_ref().unwrap();
 
         let resize_mode = match wallpaper.resize_mode {
-            swww_vulkan_common::ipc_types::ResizeMode::Crop => 0u32,
-            swww_vulkan_common::ipc_types::ResizeMode::Fit => 1u32,
-            swww_vulkan_common::ipc_types::ResizeMode::No => 2u32,
+            wl_common::ipc_types::ResizeMode::Crop => 0u32,
+            wl_common::ipc_types::ResizeMode::Fit => 1u32,
+            wl_common::ipc_types::ResizeMode::No => 2u32,
         };
 
         // Compute animation UV offset if animating
