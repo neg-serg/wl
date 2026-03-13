@@ -44,7 +44,7 @@
 
 **Goal**: 5 new visually distinct transition effects selectable via `--transition-type`
 
-**Independent Test**: `swww-vulkan img <path> --transition-type <name>` for each of the 5 new effects
+**Independent Test**: `wl img <path> --transition-type <name>` for each of the 5 new effects
 
 ### Implementation for User Story 1
 
@@ -54,7 +54,7 @@
 - [x] T010 [P] [US1] Create diamond transition shader in shaders/transition_diamond.frag — Manhattan distance (L1 norm) reveal from center (pos_x, pos_y), expanding diamond shape; same structure as transition_grow.frag but with abs(dx)+abs(dy) instead of Euclidean distance
 - [x] T011 [P] [US1] Create dissolve transition shader in shaders/transition_dissolve.frag — hash-based pseudo-random noise per pixel using integer hash of UV coordinates; pixel transitions when hash(uv) < progress
 
-**Checkpoint**: All 5 effects render correctly. Test each: `swww-vulkan img <path> --transition-type pixelate|swirl|blinds|diamond|dissolve`
+**Checkpoint**: All 5 effects render correctly. Test each: `wl img <path> --transition-type pixelate|swirl|blinds|diamond|dissolve`
 
 ---
 
@@ -68,7 +68,7 @@
 
 - [x] T012 [US2] Verify `pick_random()` in daemon/src/transition.rs includes all 10 TransitionKind variants in choices array (done in T004, verify equal probability)
 
-**Checkpoint**: `for i in $(seq 1 20); do swww-vulkan img <path>; done` shows variety including new effects
+**Checkpoint**: `for i in $(seq 1 20); do wl img <path>; done` shows variety including new effects
 
 ---
 
@@ -90,7 +90,7 @@
 
 **Goal**: Duration, FPS, and bezier easing work correctly with all new effects
 
-**Independent Test**: `swww-vulkan img <path> --transition-type pixelate --transition-duration 2.0` completes in 2 seconds
+**Independent Test**: `wl img <path> --transition-type pixelate --transition-duration 2.0` completes in 2 seconds
 
 ### Implementation for User Story 4
 

@@ -5,7 +5,7 @@
 The `img` subcommand's `--transition-type` argument accepts these new values in addition to existing ones:
 
 ```
-swww-vulkan img [OPTIONS] <PATH>
+wl img [OPTIONS] <PATH>
 
 --transition-type <TYPE>
   Existing: fade, wipe, grow, wave, outer, random, none

@@ -1,11 +1,11 @@
-# CLI Contract: `swww-vulkan random`
+# CLI Contract: `wl random`
 
 **Branch**: `7-random-wallpaper` | **Date**: 2026-03-13
 
 ## Command Synopsis
 
 ```
-swww-vulkan random [OPTIONS] <DIRECTORY>...
+wl random [OPTIONS] <DIRECTORY>...
 ```
 
 ## Positional Arguments
@@ -75,17 +75,17 @@ swww-vulkan random [OPTIONS] <DIRECTORY>...
 
 ```bash
 # Basic usage — scan two directories
-swww-vulkan random ~/pic/wl ~/pic/black
+wl random ~/pic/wl ~/pic/black
 
 # Custom transition
-swww-vulkan random --transition-type wave --transition-duration 1.5 ~/Pictures
+wl random --transition-type wave --transition-duration 1.5 ~/Pictures
 
 # Disable all hooks
-swww-vulkan random --no-greeter-sync --no-notify ~/Wallpapers
+wl random --no-greeter-sync --no-notify ~/Wallpapers
 
 # Custom hook paths
-swww-vulkan random --greeter-path /tmp/greeter.png --notify-path /tmp/wp-path.txt ~/pic
+wl random --greeter-path /tmp/greeter.png --notify-path /tmp/wp-path.txt ~/pic
 
 # Specific output only
-swww-vulkan random --outputs eDP-1 ~/Pictures/landscape
+wl random --outputs eDP-1 ~/Pictures/landscape
 ```

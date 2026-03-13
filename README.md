@@ -1,4 +1,4 @@
-# swww-vulkan
+# wl
 
 A Vulkan-accelerated wallpaper daemon for Wayland compositors. Spiritual successor to [swww](https://github.com/LGFae/swww) with GPU-powered rendering.
 
@@ -26,36 +26,36 @@ cargo build --release
 ```
 
 Binaries are placed in `target/release/`:
-- `swww-vulkan` — CLI client
-- `swww-vulkan-daemon` — background daemon
+- `wl` — CLI client
+- `wl-daemon` — background daemon
 
 ## Usage
 
 ```sh
 # Start the daemon
-swww-vulkan init
+wl init
 
 # Set a wallpaper
-swww-vulkan img /path/to/wallpaper.jpg
+wl img /path/to/wallpaper.jpg
 
 # Set with a transition
-swww-vulkan img /path/to/wallpaper.png --transition-type fade --transition-duration 1.5
+wl img /path/to/wallpaper.png --transition-type fade --transition-duration 1.5
 
 # Set a solid color
-swww-vulkan clear '#1e1e2e'
+wl clear '#1e1e2e'
 
 # Query current state
-swww-vulkan query
+wl query
 
 # Stop the daemon
-swww-vulkan kill
+wl kill
 ```
 
 ## Architecture
 
 ```
 ┌─────────────┐    IPC (Unix socket)    ┌──────────────────┐
-│  swww-vulkan │ ◄────────────────────► │ swww-vulkan-daemon│
+│  wl │ ◄────────────────────► │ wl-daemon│
 │   (client)   │                        │    (Vulkan +      │
 └─────────────┘                        │     Wayland)      │
                                         └──────────────────┘

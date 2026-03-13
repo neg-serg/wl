@@ -5,7 +5,7 @@
 
 ## Summary
 
-Add a `random` subcommand to the `swww-vulkan` CLI client that recursively scans user-specified directories for image files, picks one at random, and applies it as the wallpaper by sending the standard `IpcCommand::Img` to the daemon. Optional post-apply hooks (greeter cache sync, shell notification file) are configurable and enabled by default. No daemon changes required — the feature is entirely client-side, reusing the existing `img` command's IPC path.
+Add a `random` subcommand to the `wl` CLI client that recursively scans user-specified directories for image files, picks one at random, and applies it as the wallpaper by sending the standard `IpcCommand::Img` to the daemon. Optional post-apply hooks (greeter cache sync, shell notification file) are configurable and enabled by default. No daemon changes required — the feature is entirely client-side, reusing the existing `img` command's IPC path.
 
 ## Technical Context
 
