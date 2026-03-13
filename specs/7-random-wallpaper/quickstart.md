@@ -5,7 +5,7 @@
 ## Prerequisites
 
 - Rust stable toolchain (edition 2024)
-- Working swww-vulkan build environment
+- Working wl build environment
 - Wayland compositor running (for testing)
 
 ## Files to Create/Modify
@@ -27,10 +27,10 @@ cargo build
 cargo test
 
 # Manual test (requires running Wayland session)
-cargo run --bin swww-vulkan -- random ~/pic/wl ~/pic/black
+cargo run --bin wl -- random ~/pic/wl ~/pic/black
 
 # Test with hooks disabled
-cargo run --bin swww-vulkan -- random --no-greeter-sync --no-notify ~/Pictures
+cargo run --bin wl -- random --no-greeter-sync --no-notify ~/Pictures
 ```
 
 ## Implementation Order

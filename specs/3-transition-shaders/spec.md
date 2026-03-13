@@ -13,15 +13,15 @@ A user switches wallpapers and sees visually interesting transition effects beyo
 
 **Why this priority**: Core value of the feature — users want variety and visual appeal when switching wallpapers.
 
-**Independent Test**: Can be fully tested by running `swww-vulkan img <path> --transition-type <new_type>` and observing the visual effect renders correctly and completes.
+**Independent Test**: Can be fully tested by running `wl img <path> --transition-type <new_type>` and observing the visual effect renders correctly and completes.
 
 **Acceptance Scenarios**:
 
-1. **Given** a wallpaper is displayed, **When** user runs `swww-vulkan img <path> --transition-type pixelate`, **Then** the old wallpaper dissolves into increasingly large blocks before revealing the new image
-2. **Given** a wallpaper is displayed, **When** user runs `swww-vulkan img <path> --transition-type swirl`, **Then** the transition animates as a spiral vortex distortion from center
-3. **Given** a wallpaper is displayed, **When** user runs `swww-vulkan img <path> --transition-type blinds`, **Then** horizontal or vertical slats reveal the new wallpaper like venetian blinds
-4. **Given** a wallpaper is displayed, **When** user runs `swww-vulkan img <path> --transition-type diamond`, **Then** a diamond-shaped reveal pattern expands from center to edges
-5. **Given** a wallpaper is displayed, **When** user runs `swww-vulkan img <path> --transition-type dissolve`, **Then** individual pixels randomly transition from old to new image using noise
+1. **Given** a wallpaper is displayed, **When** user runs `wl img <path> --transition-type pixelate`, **Then** the old wallpaper dissolves into increasingly large blocks before revealing the new image
+2. **Given** a wallpaper is displayed, **When** user runs `wl img <path> --transition-type swirl`, **Then** the transition animates as a spiral vortex distortion from center
+3. **Given** a wallpaper is displayed, **When** user runs `wl img <path> --transition-type blinds`, **Then** horizontal or vertical slats reveal the new wallpaper like venetian blinds
+4. **Given** a wallpaper is displayed, **When** user runs `wl img <path> --transition-type diamond`, **Then** a diamond-shaped reveal pattern expands from center to edges
+5. **Given** a wallpaper is displayed, **When** user runs `wl img <path> --transition-type dissolve`, **Then** individual pixels randomly transition from old to new image using noise
 
 ---
 
@@ -61,7 +61,7 @@ All existing transition parameters (`--transition-duration`, `--transition-fps`,
 
 **Why this priority**: Consistency with existing behavior — no special handling needed but must be verified.
 
-**Independent Test**: Can be tested by running `swww-vulkan img <path> --transition-type pixelate --transition-duration 2.0` and confirming the effect takes 2 seconds.
+**Independent Test**: Can be tested by running `wl img <path> --transition-type pixelate --transition-duration 2.0` and confirming the effect takes 2 seconds.
 
 **Acceptance Scenarios**:
 

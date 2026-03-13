@@ -20,7 +20,7 @@ Sync Impact Report
 - Follow-up TODOs: None
 -->
 
-# swww-vulkan Constitution
+# wl Constitution
 
 ## Core Principles
 
@@ -63,7 +63,7 @@ compared to the original swww.
 ### III. Client-Daemon Architecture
 
 The system MUST maintain a strict separation between the CLI client
-(`swww-vulkan`) and the long-running daemon (`swww-vulkan-daemon`).
+(`wl`) and the long-running daemon (`wl-daemon`).
 
 - The daemon MUST be the sole owner of Vulkan resources and Wayland
   surfaces.
@@ -128,7 +128,7 @@ reasonable.
   cache or graceful fallback.
 
 **Rationale**: Users switching from swww MUST be able to adopt
-swww-vulkan with minimal script changes.
+wl with minimal script changes.
 
 ### VII. Safety & Correctness
 
@@ -180,7 +180,7 @@ Measurable performance targets that MUST be met before release:
 ## Governance
 
 This constitution is the authoritative reference for architectural
-and design decisions in swww-vulkan. All code reviews and design
+and design decisions in wl. All code reviews and design
 proposals MUST verify compliance with these principles.
 
 - **Amendments**: Any change to this constitution MUST be documented

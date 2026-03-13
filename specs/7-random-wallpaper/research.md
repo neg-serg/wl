@@ -46,7 +46,7 @@
 
 ## Decision 5: Daemon Auto-Start
 
-**Decision**: Reuse the existing `daemon::init()` function from `client/src/daemon.rs` which already handles spawning `swww-vulkan-daemon` and waiting for the socket.
+**Decision**: Reuse the existing `daemon::init()` function from `client/src/daemon.rs` which already handles spawning `wl-daemon` and waiting for the socket.
 
 **Rationale**: The `img` command already auto-starts the daemon in `main.rs` (the client checks if daemon is running and spawns it if not). The `random` command will follow the same pattern — no new daemon startup logic needed.
 

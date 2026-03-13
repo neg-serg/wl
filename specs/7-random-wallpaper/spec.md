@@ -3,7 +3,7 @@
 **Feature Branch**: `7-random-wallpaper`
 **Created**: 2026-03-13
 **Status**: Draft
-**Input**: User description: "Integrate nushell wl script functionality into swww-vulkan as a built-in subcommand with configurable optional hooks"
+**Input**: User description: "Integrate nushell wl script functionality into wl as a built-in subcommand with configurable optional hooks"
 
 ## User Scenarios & Testing *(mandatory)*
 

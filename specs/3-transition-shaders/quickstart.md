@@ -20,22 +20,22 @@
 cargo build --release
 
 # Install
-install -m 755 target/release/swww-vulkan ~/.local/bin/
-install -m 755 target/release/swww-vulkan-daemon ~/.local/bin/
+install -m 755 target/release/wl ~/.local/bin/
+install -m 755 target/release/wl-daemon ~/.local/bin/
 
 # Restart daemon
-swww-vulkan kill; sleep 1; swww-vulkan init &
+wl kill; sleep 1; wl init &
 
 # Test individual effects
-swww-vulkan img /path/to/image.png --transition-type pixelate
-swww-vulkan img /path/to/image.png --transition-type swirl
-swww-vulkan img /path/to/image.png --transition-type blinds
-swww-vulkan img /path/to/image.png --transition-type diamond
-swww-vulkan img /path/to/image.png --transition-type dissolve
+wl img /path/to/image.png --transition-type pixelate
+wl img /path/to/image.png --transition-type swirl
+wl img /path/to/image.png --transition-type blinds
+wl img /path/to/image.png --transition-type diamond
+wl img /path/to/image.png --transition-type dissolve
 
 # Test random includes new effects
-for i in $(seq 1 20); do swww-vulkan img /path/to/image.png; done
+for i in $(seq 1 20); do wl img /path/to/image.png; done
 
 # Stress test rapid switching
-for i in $(seq 1 50); do swww-vulkan img /path/to/image.png --transition-type dissolve; done
+for i in $(seq 1 50); do wl img /path/to/image.png --transition-type dissolve; done
 ```

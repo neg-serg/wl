@@ -38,9 +38,9 @@
 
 ## Phase 3: User Story 1 — Set a Random Wallpaper (Priority: P1) MVP
 
-**Goal**: User runs `swww-vulkan random <dirs>` and a randomly selected wallpaper is applied with a transition
+**Goal**: User runs `wl random <dirs>` and a randomly selected wallpaper is applied with a transition
 
-**Independent Test**: Run `swww-vulkan random ~/pic/wl` with a Wayland session and daemon running — a random wallpaper appears
+**Independent Test**: Run `wl random ~/pic/wl` with a Wayland session and daemon running — a random wallpaper appears
 
 ### Implementation for User Story 1
 
@@ -48,7 +48,7 @@
 - [x] T007 [US1] Handle edge cases in `client/src/random.rs` — when all directories are missing/invalid exit with descriptive error, when no image files found exit with code 1 and message "no image files found in specified directories"
 - [x] T008 [US1] Integrate upscale resolution logic in `client/src/main.rs` — reuse `resolve_upscale()` from the existing `Img` handler so `--upscale` flags work with the random command identically to `img`
 
-**Checkpoint**: `swww-vulkan random ~/pic/wl ~/pic/black` applies a random wallpaper with transitions. All `img` options (transition, resize, upscale) work. MVP complete.
+**Checkpoint**: `wl random ~/pic/wl ~/pic/black` applies a random wallpaper with transitions. All `img` options (transition, resize, upscale) work. MVP complete.
 
 ---
 
@@ -148,7 +148,7 @@ Task T011: "Implement write_notify() in client/src/random.rs"
 1. Complete Phase 1: Setup (T001-T002)
 2. Complete Phase 2: Foundational (T003-T005)
 3. Complete Phase 3: User Story 1 (T006-T008)
-4. **STOP and VALIDATE**: Test `swww-vulkan random ~/pic/wl` — wallpaper applies with transition
+4. **STOP and VALIDATE**: Test `wl random ~/pic/wl` — wallpaper applies with transition
 5. Deploy/demo if ready — this alone replaces the core nushell script functionality
 
 ### Incremental Delivery
