@@ -73,8 +73,8 @@ impl VulkanContext {
     }
 
     fn create_instance(entry: &ash::Entry) -> Result<ash::Instance, VulkanError> {
-        let app_name = CString::new("swww-vulkan-daemon").unwrap();
-        let engine_name = CString::new("swww-vulkan").unwrap();
+        let app_name = CString::new("wl-daemon").unwrap();
+        let engine_name = CString::new("wl").unwrap();
 
         let app_info = vk::ApplicationInfo::default()
             .application_name(&app_name)

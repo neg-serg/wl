@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "swww-vulkan", about = "Vulkan wallpaper tool for Wayland")]
+#[command(name = "wl", about = "Vulkan wallpaper tool for Wayland")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -221,7 +221,7 @@ pub enum TransitionTypeArg {
     None,
 }
 
-impl From<ResizeArg> for swww_vulkan_common::ipc_types::ResizeMode {
+impl From<ResizeArg> for wl_common::ipc_types::ResizeMode {
     fn from(arg: ResizeArg) -> Self {
         match arg {
             ResizeArg::Crop => Self::Crop,
@@ -239,7 +239,7 @@ fn parse_upscale_scale(s: &str) -> Result<u8, String> {
     }
 }
 
-impl From<TransitionTypeArg> for swww_vulkan_common::ipc_types::TransitionType {
+impl From<TransitionTypeArg> for wl_common::ipc_types::TransitionType {
     fn from(arg: TransitionTypeArg) -> Self {
         match arg {
             TransitionTypeArg::Fade => Self::Fade,

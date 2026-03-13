@@ -1,14 +1,14 @@
 [package]
-name = "swww-vulkan-daemon"
+name = "wl-daemon"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "swww-vulkan-daemon"
+name = "wl-daemon"
 path = "src/main.rs"
 
 [dependencies]
-swww-vulkan-common = { path = "../common" }
+wl-common = { path = "../common" }
 ash = "0.38"
 wayland-client = { version = "0.31", features = ["system"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }

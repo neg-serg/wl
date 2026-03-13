@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ipc_types::SOCKET_NAME;
 
-const APP_DIR: &str = "swww-vulkan";
+const APP_DIR: &str = "wl";
 const STATE_FILE: &str = "state.json";
 
 // ---------------------------------------------------------------------------
@@ -33,7 +33,7 @@ pub struct OutputSessionState {
 // XDG directory resolution
 // ---------------------------------------------------------------------------
 
-/// Get state directory: `$XDG_STATE_HOME/swww-vulkan/` (default `~/.local/state/swww-vulkan/`).
+/// Get state directory: `$XDG_STATE_HOME/wl/` (default `~/.local/state/wl/`).
 pub fn state_dir() -> PathBuf {
     let base = dirs::state_dir()
         .or_else(|| std::env::var_os("XDG_STATE_HOME").map(PathBuf::from))
@@ -46,7 +46,7 @@ pub fn state_dir() -> PathBuf {
     base.join(APP_DIR)
 }
 
-/// Get cache directory: `$XDG_CACHE_HOME/swww-vulkan/` (default `~/.cache/swww-vulkan/`).
+/// Get cache directory: `$XDG_CACHE_HOME/wl/` (default `~/.cache/wl/`).
 pub fn cache_dir() -> PathBuf {
     let base = dirs::cache_dir()
         .or_else(|| std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from))
@@ -58,7 +58,7 @@ pub fn cache_dir() -> PathBuf {
     base.join(APP_DIR)
 }
 
-/// Get socket path: `$XDG_RUNTIME_DIR/swww-vulkan.sock`.
+/// Get socket path: `$XDG_RUNTIME_DIR/wl.sock`.
 ///
 /// Fallback: derive the runtime directory from `$WAYLAND_DISPLAY` if it
 /// contains a path separator, otherwise fall back to `/run/user/<uid>/`.
@@ -178,7 +178,7 @@ const UPSCALE_DIR: &str = "upscale";
 const UPSCALE_INDEX: &str = "index.json";
 const MAX_UPSCALE_ENTRIES: usize = 50;
 
-/// Get upscale cache directory: `$XDG_CACHE_HOME/swww-vulkan/upscale/`.
+/// Get upscale cache directory: `$XDG_CACHE_HOME/wl/upscale/`.
 pub fn upscale_cache_dir() -> PathBuf {
     cache_dir().join(UPSCALE_DIR)
 }

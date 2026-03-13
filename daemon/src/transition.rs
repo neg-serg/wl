@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use getrandom::fill;
-use swww_vulkan_common::ipc_types::{TransitionParams, TransitionType};
+use wl_common::ipc_types::{TransitionParams, TransitionType};
 
 use crate::output::{GpuTexture, TransitionState};
 use crate::vulkan::pipeline::TransitionKind;
@@ -57,9 +57,9 @@ pub fn create_transition(
     params: &TransitionParams,
     kind: TransitionKind,
     old_texture: GpuTexture,
-    old_resize_mode: swww_vulkan_common::ipc_types::ResizeMode,
+    old_resize_mode: wl_common::ipc_types::ResizeMode,
     new_texture: GpuTexture,
-    new_resize_mode: swww_vulkan_common::ipc_types::ResizeMode,
+    new_resize_mode: wl_common::ipc_types::ResizeMode,
 ) -> TransitionState {
     TransitionState {
         transition_type: match kind {

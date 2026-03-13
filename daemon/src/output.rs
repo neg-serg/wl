@@ -37,10 +37,10 @@ pub struct Output {
 #[allow(dead_code)]
 pub struct Wallpaper {
     pub source_path: String,
-    pub format: swww_vulkan_common::ipc_types::ImageFormat,
+    pub format: wl_common::ipc_types::ImageFormat,
     pub original_dimensions: (u32, u32),
     pub display_dimensions: (u32, u32),
-    pub resize_mode: swww_vulkan_common::ipc_types::ResizeMode,
+    pub resize_mode: wl_common::ipc_types::ResizeMode,
     pub texture: GpuTexture,
     pub is_animated: bool,
 }
@@ -73,7 +73,7 @@ impl GpuTexture {
 /// Active transition between two wallpapers.
 #[allow(dead_code)]
 pub struct TransitionState {
-    pub transition_type: swww_vulkan_common::ipc_types::TransitionType,
+    pub transition_type: wl_common::ipc_types::TransitionType,
     pub kind: TransitionKind,
     pub duration_secs: f32,
     pub progress: f32,
@@ -84,9 +84,9 @@ pub struct TransitionState {
     pub bezier: [f32; 4],
     pub wave: (f32, f32),
     pub old_texture: GpuTexture,
-    pub old_resize_mode: swww_vulkan_common::ipc_types::ResizeMode,
+    pub old_resize_mode: wl_common::ipc_types::ResizeMode,
     pub new_texture: GpuTexture,
-    pub new_resize_mode: swww_vulkan_common::ipc_types::ResizeMode,
+    pub new_resize_mode: wl_common::ipc_types::ResizeMode,
     pub descriptor_set: Option<vk::DescriptorSet>,
 }
 

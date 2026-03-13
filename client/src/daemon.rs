@@ -1,7 +1,7 @@
 use std::process::Command;
 use std::time::Duration;
 
-use swww_vulkan_common::ipc_types::IpcCommand;
+use wl_common::ipc_types::IpcCommand;
 
 use crate::ipc::{IpcClient, IpcError};
 
@@ -43,7 +43,7 @@ pub async fn init() -> Result<(), String> {
 pub async fn kill() -> Result<(), String> {
     let mut client = IpcClient::connect().await.map_err(|e| match e {
         IpcError::DaemonNotRunning => {
-            "daemon is not running. Start it with 'swww-vulkan init'.".to_string()
+            "daemon is not running. Start it with 'wl init'.".to_string()
         }
         other => format!("failed to connect to daemon: {other}"),
     })?;
@@ -54,8 +54,8 @@ pub async fn kill() -> Result<(), String> {
         .map_err(|e| format!("failed to send kill command: {e}"))?;
 
     match response {
-        swww_vulkan_common::ipc_types::IpcResponse::Ok => Ok(()),
-        swww_vulkan_common::ipc_types::IpcResponse::Error { message } => Err(message),
+        wl_common::ipc_types::IpcResponse::Ok => Ok(()),
+        wl_common::ipc_types::IpcResponse::Error { message } => Err(message),
         _ => Err("unexpected response from daemon".to_string()),
     }
 }
@@ -67,12 +67,12 @@ fn find_daemon_binary() -> Result<String, String> {
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
-        let daemon_path = dir.join("swww-vulkan-daemon");
+        let daemon_path = dir.join("wl-daemon");
         if daemon_path.exists() {
             return Ok(daemon_path.to_string_lossy().to_string());
         }
     }
 
     // Fall back to PATH
-    Ok("swww-vulkan-daemon".to_string())
+    Ok("wl-daemon".to_string())
 }

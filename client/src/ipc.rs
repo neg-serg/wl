@@ -1,7 +1,7 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
-use swww_vulkan_common::ipc_types::*;
+use wl_common::ipc_types::*;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -74,7 +74,7 @@ impl IpcClient {
     /// Returns `IpcError::DaemonNotRunning` if the socket does not exist or
     /// the connection is refused.
     pub async fn connect() -> Result<Self, IpcError> {
-        let socket_path = swww_vulkan_common::cache::socket_path();
+        let socket_path = wl_common::cache::socket_path();
 
         let stream = UnixStream::connect(&socket_path)
             .await

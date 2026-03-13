@@ -4,8 +4,8 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use swww_vulkan_common::cache::{UpscaleCacheEntry, UpscaleCacheIndex, upscale_cache_dir};
-use swww_vulkan_common::ipc_types::*;
+use wl_common::cache::{UpscaleCacheEntry, UpscaleCacheIndex, upscale_cache_dir};
+use wl_common::ipc_types::*;
 
 use crate::ipc::IpcClient;
 

@@ -6,8 +6,8 @@ mod upscale;
 
 use clap::Parser;
 
-use swww_vulkan_common::cache::{UpscalePrefs, load_upscale_prefs, save_upscale_prefs};
-use swww_vulkan_common::ipc_types::*;
+use wl_common::cache::{UpscalePrefs, load_upscale_prefs, save_upscale_prefs};
+use wl_common::ipc_types::*;
 
 use crate::cli::*;
 use crate::ipc::{IpcClient, IpcError};
@@ -232,7 +232,7 @@ fn expand_tilde(path: &str) -> String {
 async fn connect_or_error() -> Result<IpcClient, String> {
     IpcClient::connect().await.map_err(|e| match e {
         IpcError::DaemonNotRunning => {
-            "daemon is not running. Start it with 'swww-vulkan init'.".to_string()
+            "daemon is not running. Start it with 'wl init'.".to_string()
         }
         other => format!("failed to connect: {other}"),
     })
