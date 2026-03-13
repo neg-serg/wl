@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
@@ -102,6 +104,81 @@ pub enum Commands {
 
     /// Remove all cached image data
     ClearCache,
+
+    /// Set a random wallpaper from specified directories
+    Random {
+        /// Directories to scan recursively for image files
+        #[arg(required = true, num_args = 1..)]
+        directories: Vec<PathBuf>,
+
+        /// Comma-separated output names (default: all)
+        #[arg(short, long)]
+        outputs: Option<String>,
+
+        /// Resize mode
+        #[arg(long, default_value = "crop")]
+        resize: ResizeArg,
+
+        /// Transition type
+        #[arg(long, default_value = "random")]
+        transition_type: TransitionTypeArg,
+
+        /// Transition duration in seconds
+        #[arg(long, default_value = "0.5")]
+        transition_duration: f32,
+
+        /// Frame step size (1-255)
+        #[arg(long, default_value = "90")]
+        transition_step: u8,
+
+        /// Target transition FPS
+        #[arg(long, default_value = "30")]
+        transition_fps: u32,
+
+        /// Angle in degrees (for wipe)
+        #[arg(long, default_value = "45")]
+        transition_angle: f32,
+
+        /// Position as "x,y" normalized or "center" (for grow)
+        #[arg(long, default_value = "center")]
+        transition_pos: String,
+
+        /// Cubic bezier control points as "a,b,c,d"
+        #[arg(long, default_value = ".25,.1,.25,1")]
+        transition_bezier: String,
+
+        /// Wave frequency and amplitude as "freq,amp"
+        #[arg(long, default_value = "20,20")]
+        transition_wave: String,
+
+        /// Upscale low-resolution images using a neural network before display
+        #[arg(long, num_args(0..=1), default_missing_value = "once")]
+        upscale: Option<UpscaleMode>,
+
+        /// Custom upscaler command (implies --upscale)
+        #[arg(long)]
+        upscale_cmd: Option<String>,
+
+        /// Force a specific upscale factor (2, 4, 8, or 16). Implies --upscale.
+        #[arg(long, value_parser = parse_upscale_scale)]
+        upscale_scale: Option<u8>,
+
+        /// Disable copying wallpaper to greeter cache
+        #[arg(long)]
+        no_greeter_sync: bool,
+
+        /// Custom greeter cache file path
+        #[arg(long, default_value = "~/.cache/greeter-wallpaper")]
+        greeter_path: String,
+
+        /// Disable writing wallpaper path to notification file
+        #[arg(long)]
+        no_notify: bool,
+
+        /// Custom notification file path
+        #[arg(long, default_value = "~/.cache/quickshell-wallpaper-path")]
+        notify_path: String,
+    },
 }
 
 #[derive(Clone, ValueEnum)]

@@ -1,6 +1,7 @@
 mod cli;
 mod daemon;
 mod ipc;
+mod random;
 mod upscale;
 
 use clap::Parser;
@@ -54,12 +55,8 @@ async fn run(cli: Cli) -> Result<(), String> {
 
             // Resolve upscale mode from CLI flag + persistent prefs.
             let prefs = load_upscale_prefs();
-            let (should_upscale, effective_cmd, effective_scale) = resolve_upscale(
-                &upscale,
-                &upscale_cmd,
-                &upscale_scale,
-                &prefs,
-            );
+            let (should_upscale, effective_cmd, effective_scale) =
+                resolve_upscale(&upscale, &upscale_cmd, &upscale_scale, &prefs);
 
             let final_path = if should_upscale {
                 upscale::upscale_image(&path, &effective_cmd, &effective_scale, &parsed_outputs)
@@ -132,7 +129,104 @@ async fn run(cli: Cli) -> Result<(), String> {
             .await
         }
         Commands::ClearCache => send_and_check(IpcCommand::ClearCache).await,
+        Commands::Random {
+            directories,
+            outputs,
+            resize,
+            transition_type,
+            transition_duration,
+            transition_step,
+            transition_fps,
+            transition_angle,
+            transition_pos,
+            transition_bezier,
+            transition_wave,
+            upscale,
+            upscale_cmd,
+            upscale_scale,
+            no_greeter_sync,
+            greeter_path,
+            no_notify,
+            notify_path,
+        } => {
+            // Scan directories for image candidates.
+            let candidates = random::scan_directories(&directories);
+            if candidates.is_empty() {
+                return Err("no image files found in specified directories".to_string());
+            }
+
+            // Pick a random wallpaper.
+            let picked = random::pick_random(&candidates).to_path_buf();
+            let path = picked.to_string_lossy().to_string();
+
+            // Parse transition parameters.
+            let position = parse_position(&transition_pos)?;
+            let bezier = parse_bezier(&transition_bezier)?;
+            let wave = parse_wave(&transition_wave)?;
+            let parsed_outputs = parse_outputs(&outputs);
+
+            // Resolve upscale mode.
+            let prefs = load_upscale_prefs();
+            let (should_upscale, effective_cmd, effective_scale) =
+                resolve_upscale(&upscale, &upscale_cmd, &upscale_scale, &prefs);
+
+            let final_path = if should_upscale {
+                upscale::upscale_image(&path, &effective_cmd, &effective_scale, &parsed_outputs)
+                    .await
+            } else {
+                path.clone()
+            };
+
+            // Ensure daemon is running.
+            if connect_or_error().await.is_err() {
+                daemon::init().await?;
+            }
+
+            // Send wallpaper command to daemon.
+            let cmd = IpcCommand::Img {
+                path: final_path,
+                outputs: parsed_outputs,
+                resize: resize.into(),
+                transition: TransitionParams {
+                    transition_type: transition_type.into(),
+                    duration_secs: transition_duration,
+                    step: transition_step,
+                    fps: transition_fps,
+                    angle: transition_angle,
+                    position,
+                    bezier,
+                    wave,
+                },
+            };
+
+            send_and_check(cmd).await?;
+
+            // Run post-apply hooks.
+            let expanded_greeter = expand_tilde(&greeter_path);
+            let expanded_notify = expand_tilde(&notify_path);
+
+            if !no_greeter_sync {
+                random::greeter_sync(&picked, std::path::Path::new(&expanded_greeter));
+            }
+            if !no_notify {
+                random::write_notify(&picked, std::path::Path::new(&expanded_notify));
+            }
+
+            // Print selected wallpaper path to stdout.
+            println!("{}", picked.display());
+            Ok(())
+        }
     }
+}
+
+/// Expand a leading `~` to the user's home directory.
+fn expand_tilde(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return format!("{home}/{rest}");
+    }
+    path.to_string()
 }
 
 async fn connect_or_error() -> Result<IpcClient, String> {
