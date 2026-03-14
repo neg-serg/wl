@@ -69,12 +69,32 @@ fn builtin_shaders() -> Vec<(&'static str, &'static [u8])> {
             include_shader!("transition_cross_zoom.frag.spv"),
         ),
         (
-            "transition_circle_crop.frag",
-            include_shader!("transition_circle_crop.frag.spv"),
+            "transition_fluid_distortion.frag",
+            include_shader!("transition_fluid_distortion.frag.spv"),
+        ),
+        (
+            "transition_fluid_drain.frag",
+            include_shader!("transition_fluid_drain.frag.spv"),
+        ),
+        (
+            "transition_fluid_ripple.frag",
+            include_shader!("transition_fluid_ripple.frag.spv"),
+        ),
+        (
+            "transition_fluid_vortex.frag",
+            include_shader!("transition_fluid_vortex.frag.spv"),
+        ),
+        (
+            "transition_fluid_wave.frag",
+            include_shader!("transition_fluid_wave.frag.spv"),
         ),
         (
             "transition_ink_bleed.frag",
             include_shader!("transition_ink_bleed.frag.spv"),
+        ),
+        (
+            "transition_lava_lamp.frag",
+            include_shader!("transition_lava_lamp.frag.spv"),
         ),
         (
             "transition_chromatic_aberration.frag",

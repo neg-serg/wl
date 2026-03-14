@@ -29,6 +29,12 @@ pub unsafe fn render_frame(
         vk.device
             .reset_fences(&[output.in_flight_fence])
             .map_err(RenderError::Vulkan)?;
+
+        // Free the previous frame's command buffer now that the fence has signaled.
+        if let Some(old_cmd) = output.last_command_buffer.take() {
+            vk.device
+                .free_command_buffers(vk.command_pool, &[old_cmd]);
+        }
     }
 
     let (image_index, suboptimal) =
@@ -72,15 +78,17 @@ pub unsafe fn render_frame(
     let extent = swapchain.extent;
 
     // Check if we should render a transition
+    let image_in_bounds = (image_index as usize) < output.framebuffers.len();
+
     let has_transition = output.transition.is_some()
         && output.transition.as_ref().unwrap().descriptor_set.is_some()
         && transition_pipeline.is_some()
-        && !output.framebuffers.is_empty();
+        && image_in_bounds;
 
     let has_wallpaper = output.wallpaper.is_some()
         && output.descriptor_set.is_some()
         && pipeline.is_some()
-        && !output.framebuffers.is_empty();
+        && image_in_bounds;
 
     if has_transition {
         let tp = transition_pipeline.unwrap();
@@ -240,6 +248,8 @@ pub unsafe fn render_frame(
         Err(e) => return Err(RenderError::Vulkan(e)),
     }
 
+    // Store the command buffer so it can be freed after the fence signals next frame.
+    output.last_command_buffer = Some(cmd);
     output.needs_redraw = false;
     Ok(())
 }

@@ -174,8 +174,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             (TransitionKind::Morph, "transition_morph.frag"),
             (TransitionKind::Hexagonalize, "transition_hexagonalize.frag"),
             (TransitionKind::CrossZoom, "transition_cross_zoom.frag"),
-            (TransitionKind::CircleCrop, "transition_circle_crop.frag"),
+            (
+                TransitionKind::FluidDistortion,
+                "transition_fluid_distortion.frag",
+            ),
+            (TransitionKind::FluidDrain, "transition_fluid_drain.frag"),
+            (
+                TransitionKind::FluidRipple,
+                "transition_fluid_ripple.frag",
+            ),
+            (
+                TransitionKind::FluidVortex,
+                "transition_fluid_vortex.frag",
+            ),
+            (TransitionKind::FluidWave, "transition_fluid_wave.frag"),
             (TransitionKind::InkBleed, "transition_ink_bleed.frag"),
+            (TransitionKind::LavaLamp, "transition_lava_lamp.frag"),
             (
                 TransitionKind::ChromaticAberration,
                 "transition_chromatic_aberration.frag",
@@ -557,12 +571,17 @@ fn handle_img(
             let pipeline = daemon.pipeline.as_ref().unwrap();
 
             if let Some(output) = daemon.outputs.get_mut(name) {
-                // Allocate descriptor set for atlas
-                let ds = output.descriptor_set.unwrap_or_else(|| {
-                    pipeline
-                        .allocate_descriptor_set(&daemon.vk.device)
-                        .expect("failed to allocate descriptor set")
-                });
+                // Allocate descriptor set for atlas (reuse existing if available)
+                let ds = match output.descriptor_set {
+                    Some(ds) => ds,
+                    None => match pipeline.allocate_descriptor_set(&daemon.vk.device) {
+                        Ok(ds) => ds,
+                        Err(e) => {
+                            warn!(output = %name, "failed to allocate descriptor set: {e}");
+                            continue;
+                        }
+                    },
+                };
 
                 WallpaperPipeline::update_descriptor_set(
                     &daemon.vk.device,
@@ -780,11 +799,17 @@ fn set_static_wallpaper(
                 output.transition = Some(t);
                 output.needs_redraw = true;
             } else {
-                let ds = output.descriptor_set.unwrap_or_else(|| {
-                    pipeline
-                        .allocate_descriptor_set(&daemon.vk.device)
-                        .expect("failed to allocate descriptor set")
-                });
+                // No transition: set wallpaper directly (reuse descriptor set if available)
+                let ds = match output.descriptor_set {
+                    Some(ds) => ds,
+                    None => match pipeline.allocate_descriptor_set(&daemon.vk.device) {
+                        Ok(ds) => ds,
+                        Err(e) => {
+                            warn!(output = %name, "failed to allocate descriptor set: {e}");
+                            continue;
+                        }
+                    },
+                };
 
                 WallpaperPipeline::update_descriptor_set(
                     &daemon.vk.device,
@@ -842,10 +867,11 @@ fn handle_clear(
             // SAFETY: device_wait_idle ensures no GPU work references the old texture.
             unsafe {
                 let _ = daemon.vk.device.device_wait_idle();
-                // Cancel any active transition
+                // Cancel any active transition.
+                // Only destroy old_texture here — new_texture shares handles with
+                // output.wallpaper.texture, which clear_wallpaper will destroy.
                 if let Some(t) = output.transition.take() {
                     t.old_texture.destroy(&daemon.vk.device);
-                    t.new_texture.destroy(&daemon.vk.device);
                     if let Some(ds) = t.descriptor_set
                         && let Some(ref tp) = daemon.transition_pipeline
                     {

@@ -31,6 +31,9 @@ pub struct Output {
     pub render_finished_semaphore: vk::Semaphore,
     pub in_flight_fence: vk::Fence,
     pub needs_redraw: bool,
+
+    // Previous frame's command buffer, freed after fence wait
+    pub last_command_buffer: Option<vk::CommandBuffer>,
 }
 
 /// A wallpaper bound to an output.
@@ -140,6 +143,7 @@ impl Output {
             render_finished_semaphore,
             in_flight_fence,
             needs_redraw: true,
+            last_command_buffer: None,
         })
     }
 
