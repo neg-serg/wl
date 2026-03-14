@@ -455,7 +455,6 @@ pub struct TransitionPipeline {
 /// Internal transition types (excludes None and Random).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TransitionKind {
-    Fade,
     Wipe,
     Wave,
     Outer,
@@ -468,15 +467,11 @@ pub enum TransitionKind {
     Morph,
     Hexagonalize,
     CrossZoom,
-    FilmBurn,
     CircleCrop,
-    FluidDistortion,
     InkBleed,
-    LavaLamp,
     ChromaticAberration,
     LensDistortion,
     CrtShutdown,
-    AsciiDissolve,
     PerlinWipe,
     RadialBlur,
 }

@@ -10,7 +10,6 @@ use crate::vulkan::pipeline::TransitionKind;
 /// Random picks uniformly from all types (excludes Wipe).
 pub fn resolve_kind(tt: TransitionType) -> Option<TransitionKind> {
     match tt {
-        TransitionType::Fade => Some(TransitionKind::Fade),
         TransitionType::Wipe => Some(TransitionKind::Wipe),
         TransitionType::Wave => Some(TransitionKind::Wave),
         TransitionType::Outer => Some(TransitionKind::Outer),
@@ -23,15 +22,11 @@ pub fn resolve_kind(tt: TransitionType) -> Option<TransitionKind> {
         TransitionType::Morph => Some(TransitionKind::Morph),
         TransitionType::Hexagonalize => Some(TransitionKind::Hexagonalize),
         TransitionType::CrossZoom => Some(TransitionKind::CrossZoom),
-        TransitionType::FilmBurn => Some(TransitionKind::FilmBurn),
         TransitionType::CircleCrop => Some(TransitionKind::CircleCrop),
-        TransitionType::FluidDistortion => Some(TransitionKind::FluidDistortion),
         TransitionType::InkBleed => Some(TransitionKind::InkBleed),
-        TransitionType::LavaLamp => Some(TransitionKind::LavaLamp),
         TransitionType::ChromaticAberration => Some(TransitionKind::ChromaticAberration),
         TransitionType::LensDistortion => Some(TransitionKind::LensDistortion),
         TransitionType::CrtShutdown => Some(TransitionKind::CrtShutdown),
-        TransitionType::AsciiDissolve => Some(TransitionKind::AsciiDissolve),
         TransitionType::PerlinWipe => Some(TransitionKind::PerlinWipe),
         TransitionType::RadialBlur => Some(TransitionKind::RadialBlur),
         TransitionType::Random => Some(pick_random()),
@@ -51,16 +46,10 @@ fn pick_random() -> TransitionKind {
         TransitionKind::Morph,
         TransitionKind::Hexagonalize,
         TransitionKind::CrossZoom,
-        TransitionKind::FilmBurn,
         TransitionKind::CircleCrop,
-        TransitionKind::FluidDistortion,
         TransitionKind::InkBleed,
-        TransitionKind::LavaLamp,
         TransitionKind::ChromaticAberration,
         TransitionKind::LensDistortion,
-        TransitionKind::CrtShutdown,
-        TransitionKind::AsciiDissolve,
-        TransitionKind::PerlinWipe,
         TransitionKind::RadialBlur,
     ];
     let mut buf = [0u8; 8];
@@ -80,7 +69,6 @@ pub fn create_transition(
 ) -> TransitionState {
     TransitionState {
         transition_type: match kind {
-            TransitionKind::Fade => TransitionType::Fade,
             TransitionKind::Wipe => TransitionType::Wipe,
             TransitionKind::Wave => TransitionType::Wave,
             TransitionKind::Outer => TransitionType::Outer,
@@ -93,15 +81,11 @@ pub fn create_transition(
             TransitionKind::Morph => TransitionType::Morph,
             TransitionKind::Hexagonalize => TransitionType::Hexagonalize,
             TransitionKind::CrossZoom => TransitionType::CrossZoom,
-            TransitionKind::FilmBurn => TransitionType::FilmBurn,
             TransitionKind::CircleCrop => TransitionType::CircleCrop,
-            TransitionKind::FluidDistortion => TransitionType::FluidDistortion,
             TransitionKind::InkBleed => TransitionType::InkBleed,
-            TransitionKind::LavaLamp => TransitionType::LavaLamp,
             TransitionKind::ChromaticAberration => TransitionType::ChromaticAberration,
             TransitionKind::LensDistortion => TransitionType::LensDistortion,
             TransitionKind::CrtShutdown => TransitionType::CrtShutdown,
-            TransitionKind::AsciiDissolve => TransitionType::AsciiDissolve,
             TransitionKind::PerlinWipe => TransitionType::PerlinWipe,
             TransitionKind::RadialBlur => TransitionType::RadialBlur,
         },

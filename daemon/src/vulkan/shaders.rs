@@ -21,10 +21,6 @@ fn builtin_shaders() -> Vec<(&'static str, &'static [u8])> {
         ("wallpaper.vert", include_shader!("wallpaper.vert.spv")),
         ("wallpaper.frag", include_shader!("wallpaper.frag.spv")),
         (
-            "transition_fade.frag",
-            include_shader!("transition_fade.frag.spv"),
-        ),
-        (
             "transition_wipe.frag",
             include_shader!("transition_wipe.frag.spv"),
         ),
@@ -73,24 +69,12 @@ fn builtin_shaders() -> Vec<(&'static str, &'static [u8])> {
             include_shader!("transition_cross_zoom.frag.spv"),
         ),
         (
-            "transition_film_burn.frag",
-            include_shader!("transition_film_burn.frag.spv"),
-        ),
-        (
             "transition_circle_crop.frag",
             include_shader!("transition_circle_crop.frag.spv"),
         ),
         (
-            "transition_fluid_distortion.frag",
-            include_shader!("transition_fluid_distortion.frag.spv"),
-        ),
-        (
             "transition_ink_bleed.frag",
             include_shader!("transition_ink_bleed.frag.spv"),
-        ),
-        (
-            "transition_lava_lamp.frag",
-            include_shader!("transition_lava_lamp.frag.spv"),
         ),
         (
             "transition_chromatic_aberration.frag",
@@ -103,10 +87,6 @@ fn builtin_shaders() -> Vec<(&'static str, &'static [u8])> {
         (
             "transition_crt_shutdown.frag",
             include_shader!("transition_crt_shutdown.frag.spv"),
-        ),
-        (
-            "transition_ascii_dissolve.frag",
-            include_shader!("transition_ascii_dissolve.frag.spv"),
         ),
         (
             "transition_perlin_wipe.frag",
