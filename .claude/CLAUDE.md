@@ -1,16 +1,16 @@
 <!-- BEGIN SPECKIT CONTEXT -->
-## Current Feature: 7-random-wallpaper
+## Current Feature: 8-advanced-shaders
 
-**Branch**: `7-random-wallpaper`
-**Spec**: `specs/7-random-wallpaper/spec.md`
-**Plan**: `specs/7-random-wallpaper/plan.md`
+**Branch**: `8-advanced-shaders`
+**Spec**: `specs/8-advanced-shaders/spec.md`
+**Plan**: `specs/8-advanced-shaders/plan.md`
 
 ### Key Documents
 - Constitution: `.specify/memory/constitution.md`
-- Feature Spec: `specs/7-random-wallpaper/spec.md`
-- Implementation Plan: `specs/7-random-wallpaper/plan.md`
-- Research: `specs/7-random-wallpaper/research.md`
-- Data Model: `specs/7-random-wallpaper/data-model.md`
-- Contracts: `specs/7-random-wallpaper/contracts/`
+- Feature Spec: `specs/8-advanced-shaders/spec.md`
+- Implementation Plan: `specs/8-advanced-shaders/plan.md`
+- Research: `specs/8-advanced-shaders/research.md`
+- Data Model: `specs/8-advanced-shaders/data-model.md`
+- Contracts: `specs/8-advanced-shaders/contracts/`
 
 <!-- END SPECKIT CONTEXT -->

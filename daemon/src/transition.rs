@@ -25,6 +25,15 @@ pub fn resolve_kind(tt: TransitionType) -> Option<TransitionKind> {
         TransitionType::CrossZoom => Some(TransitionKind::CrossZoom),
         TransitionType::FilmBurn => Some(TransitionKind::FilmBurn),
         TransitionType::CircleCrop => Some(TransitionKind::CircleCrop),
+        TransitionType::FluidDistortion => Some(TransitionKind::FluidDistortion),
+        TransitionType::InkBleed => Some(TransitionKind::InkBleed),
+        TransitionType::LavaLamp => Some(TransitionKind::LavaLamp),
+        TransitionType::ChromaticAberration => Some(TransitionKind::ChromaticAberration),
+        TransitionType::LensDistortion => Some(TransitionKind::LensDistortion),
+        TransitionType::CrtShutdown => Some(TransitionKind::CrtShutdown),
+        TransitionType::AsciiDissolve => Some(TransitionKind::AsciiDissolve),
+        TransitionType::PerlinWipe => Some(TransitionKind::PerlinWipe),
+        TransitionType::RadialBlur => Some(TransitionKind::RadialBlur),
         TransitionType::Random => Some(pick_random()),
         TransitionType::None => None,
     }
@@ -32,7 +41,6 @@ pub fn resolve_kind(tt: TransitionType) -> Option<TransitionKind> {
 
 fn pick_random() -> TransitionKind {
     let choices = [
-        TransitionKind::Fade,
         TransitionKind::Wave,
         TransitionKind::Outer,
         TransitionKind::Burn,
@@ -45,6 +53,15 @@ fn pick_random() -> TransitionKind {
         TransitionKind::CrossZoom,
         TransitionKind::FilmBurn,
         TransitionKind::CircleCrop,
+        TransitionKind::FluidDistortion,
+        TransitionKind::InkBleed,
+        TransitionKind::LavaLamp,
+        TransitionKind::ChromaticAberration,
+        TransitionKind::LensDistortion,
+        TransitionKind::CrtShutdown,
+        TransitionKind::AsciiDissolve,
+        TransitionKind::PerlinWipe,
+        TransitionKind::RadialBlur,
     ];
     let mut buf = [0u8; 8];
     fill(&mut buf).expect("getrandom failed");
@@ -78,6 +95,15 @@ pub fn create_transition(
             TransitionKind::CrossZoom => TransitionType::CrossZoom,
             TransitionKind::FilmBurn => TransitionType::FilmBurn,
             TransitionKind::CircleCrop => TransitionType::CircleCrop,
+            TransitionKind::FluidDistortion => TransitionType::FluidDistortion,
+            TransitionKind::InkBleed => TransitionType::InkBleed,
+            TransitionKind::LavaLamp => TransitionType::LavaLamp,
+            TransitionKind::ChromaticAberration => TransitionType::ChromaticAberration,
+            TransitionKind::LensDistortion => TransitionType::LensDistortion,
+            TransitionKind::CrtShutdown => TransitionType::CrtShutdown,
+            TransitionKind::AsciiDissolve => TransitionType::AsciiDissolve,
+            TransitionKind::PerlinWipe => TransitionType::PerlinWipe,
+            TransitionKind::RadialBlur => TransitionType::RadialBlur,
         },
         kind,
         duration_secs: params.duration_secs,

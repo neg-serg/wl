@@ -470,6 +470,15 @@ pub enum TransitionKind {
     CrossZoom,
     FilmBurn,
     CircleCrop,
+    FluidDistortion,
+    InkBleed,
+    LavaLamp,
+    ChromaticAberration,
+    LensDistortion,
+    CrtShutdown,
+    AsciiDissolve,
+    PerlinWipe,
+    RadialBlur,
 }
 
 impl TransitionPipeline {
