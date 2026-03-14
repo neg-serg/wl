@@ -45,54 +45,145 @@ bool apply_resize(inout vec2 uv, uint resize_mode, float img_aspect, float scr_a
     return true;
 }
 
-// Hash for Voronoi cell centers
+// --- Hashing ---
 vec2 hash2(vec2 p) {
     p = vec2(dot(p, vec2(127.1, 311.7)),
              dot(p, vec2(269.5, 183.3)));
     return fract(sin(p) * 43758.5453);
 }
 
-float hash(vec2 p) {
-    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
+float hash1(vec2 p) {
+    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
 }
 
-// Voronoi: returns (distance_to_center, cell_noise, distance_to_edge)
-vec3 voronoi(vec2 p, float scale) {
+float hash1f(float n) {
+    return fract(sin(n) * 43758.5453123);
+}
+
+// --- Value noise ---
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash1(i);
+    float b = hash1(i + vec2(1.0, 0.0));
+    float c = hash1(i + vec2(0.0, 1.0));
+    float d = hash1(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// --- fBM: 5 octaves with rotation ---
+float fbm(vec2 p) {
+    float v = 0.0, a = 0.5;
+    mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
+    for (int i = 0; i < 5; i++) {
+        v += a * vnoise(p);
+        p = rot * p * 2.0;
+        a *= 0.5;
+    }
+    return v;
+}
+
+// --- Voronoi with 2nd-nearest (5x5 search for quality) ---
+vec4 voronoi2(vec2 p, float scale) {
     vec2 sp = p * scale;
     vec2 i = floor(sp);
     vec2 f = fract(sp);
 
-    float min_dist = 1.0;
-    float second_dist = 1.0;
+    float d1 = 1.0, d2 = 1.0;
     float cell_val = 0.0;
+    vec2 cell_center = vec2(0.0);
 
-    for (int y = -1; y <= 1; y++) {
-        for (int x = -1; x <= 1; x++) {
+    for (int y = -2; y <= 2; y++) {
+        for (int x = -2; x <= 2; x++) {
             vec2 neighbor = vec2(float(x), float(y));
             vec2 point = hash2(i + neighbor);
             vec2 diff = neighbor + point - f;
             float d = length(diff);
-            if (d < min_dist) {
-                second_dist = min_dist;
-                min_dist = d;
-                cell_val = fract(sin(dot(i + neighbor, vec2(12.9898, 78.233))) * 43758.5453);
-            } else if (d < second_dist) {
-                second_dist = d;
+            if (d < d1) {
+                d2 = d1;
+                d1 = d;
+                cell_val = hash1(i + neighbor);
+                cell_center = (i + neighbor + point) / scale;
+            } else if (d < d2) {
+                d2 = d;
             }
         }
     }
+    // x=dist, y=cell_noise, z=crack_width, w unused
+    return vec4(d1, cell_val, d2 - d1, 0.0);
+}
 
-    // Edge distance: difference between closest and second closest
-    float edge = second_dist - min_dist;
-    return vec3(min_dist, cell_val, edge);
+// --- Energy color ramp ---
+vec3 energy_color(float t) {
+    t = clamp(t, 0.0, 1.0);
+    vec3 c1 = vec3(0.1, 0.05, 0.2);    // deep purple
+    vec3 c2 = vec3(0.4, 0.1, 0.8);     // violet
+    vec3 c3 = vec3(0.2, 0.5, 1.0);     // electric blue
+    vec3 c4 = vec3(0.6, 0.9, 1.0);     // cyan-white
+    vec3 c5 = vec3(1.0, 1.0, 1.0);     // white-hot
+
+    if (t < 0.25) return mix(c1, c2, t * 4.0);
+    if (t < 0.5)  return mix(c2, c3, (t - 0.25) * 4.0);
+    if (t < 0.75) return mix(c3, c4, (t - 0.5) * 4.0);
+    return mix(c4, c5, (t - 0.75) * 4.0);
 }
 
 void main() {
-    vec2 old_uv = v_uv;
-    vec2 new_uv = v_uv;
+    float prog = pc.progress;
+    float base_scale = max(pc.wave_x * 0.67, 5.0);
 
+    // --- Multi-scale Voronoi particles ---
+    vec4 vor_coarse = voronoi2(v_uv, base_scale);        // large fragments
+    vec4 vor_fine   = voronoi2(v_uv, base_scale * 3.0);  // fine dust
+
+    float cell_noise_c = vor_coarse.y;
+    float cell_noise_f = vor_fine.y;
+    float crack_c = vor_coarse.z;
+    float crack_f = vor_fine.z;
+
+    // Blended disintegration value
+    float cell_noise = mix(cell_noise_c, cell_noise_f, 0.35);
+
+    // --- Disintegration front with fBM turbulence ---
+    float turb = fbm(v_uv * 6.0);
+    float directional = v_uv.y; // bottom-to-top sweep
+    float disint_value = mix(cell_noise, directional, 0.4) + (turb - 0.5) * 0.18;
+
+    float threshold = prog * 1.15;
+    float edge_dist = disint_value - threshold;
+
+    // Smooth disintegration mask
+    float dissolved = 1.0 - smoothstep(-0.01, 0.01, edge_dist);
+
+    // --- Particle drift: fragments fly away before dissolving ---
+    // Time since this particle started dissolving
+    float particle_age = max(0.0, threshold - disint_value);
+    particle_age = clamp(particle_age, 0.0, 0.3);
+
+    // Wind direction (from angle parameter)
+    float wind_angle = radians(pc.angle);
+    vec2 wind_dir = vec2(cos(wind_angle), sin(wind_angle));
+
+    // Each particle gets a unique drift velocity
+    vec2 particle_id = floor(v_uv * base_scale);
+    float drift_speed = hash1(particle_id * 7.3) * 0.5 + 0.5;
+    float drift_angle = (hash1(particle_id * 13.7) - 0.5) * 1.5;
+    vec2 drift_dir = wind_dir + vec2(cos(drift_angle), sin(drift_angle)) * 0.4;
+
+    // Accelerating drift
+    vec2 drift = drift_dir * particle_age * particle_age * drift_speed * 2.0;
+
+    // Particles also shrink and fade as they drift
+    float particle_fade = 1.0 - smoothstep(0.0, 0.25, particle_age);
+    float particle_scale = 1.0 - particle_age * 2.0;
+
+    // Drifted UV for sampling the old image fragment
+    vec2 drifted_uv = v_uv - drift;
+
+    // --- Sample textures ---
+    vec2 old_uv = drifted_uv;
+    vec2 new_uv = v_uv;
     vec4 old_color = vec4(0.0, 0.0, 0.0, 1.0);
     vec4 new_color = vec4(0.0, 0.0, 0.0, 1.0);
 
@@ -101,65 +192,65 @@ void main() {
     if (apply_resize(new_uv, pc.new_resize_mode, pc.new_img_aspect, pc.screen_aspect))
         new_color = texture(u_new, new_uv);
 
-    // Voronoi bubble cells — small soap-bubble sized
-    vec3 vor = voronoi(v_uv, 25.0);
-    float cell_dist = vor.x;    // distance to cell center
-    float cell_noise = vor.y;   // per-cell random
-    float cell_edge = vor.z;    // distance to cell boundary
+    // Drifting particles desaturate and warm up (turning to ash)
+    float desat = particle_age * 3.0;
+    float lum = dot(old_color.rgb, vec3(0.299, 0.587, 0.114));
+    vec3 ash_color = mix(old_color.rgb, vec3(lum) * vec3(1.1, 0.9, 0.7), clamp(desat, 0.0, 1.0));
+    old_color.rgb = ash_color * particle_fade;
 
-    // Bottom-to-top sweep with cell noise
-    float sweep = mix(cell_noise, v_uv.y, 0.5);
+    // --- Compositing ---
+    // In the dissolved zone: show new image underneath
+    // In the edge zone: old particles drifting away over new image
+    float in_edge_zone = smoothstep(0.0, 0.15, -edge_dist) * smoothstep(0.3, 0.0, -edge_dist);
+    float show_old = max(1.0 - dissolved, in_edge_zone * particle_fade);
 
-    // Cell disintegrates when sweep < progress
-    float threshold = pc.progress * 1.2;
-    float dissolved = step(sweep, threshold);
+    vec3 base = mix(new_color.rgb, old_color.rgb, show_old);
 
-    // Near-edge detection for glow
-    float edge_dist = sweep - threshold;
-    float near_edge = smoothstep(0.12, 0.0, edge_dist) * step(0.0, edge_dist);
+    // --- Energy field at disintegration front ---
+    float edge_proximity = smoothstep(0.12, 0.0, abs(edge_dist));
 
-    // Bubble membrane: thin iridescent edge on each cell
-    float membrane = smoothstep(0.08, 0.03, cell_edge);
+    // Crackling energy along Voronoi edges
+    float crack_energy = (1.0 - smoothstep(0.0, 0.06, crack_c)) * edge_proximity;
+    float fine_crack = (1.0 - smoothstep(0.0, 0.04, crack_f)) * edge_proximity;
 
-    // Iridescent rainbow color based on cell angle and distance
-    float angle = atan(v_uv.y - 0.5, v_uv.x - 0.5);
-    float iridescence = sin(cell_dist * 30.0 + angle * 3.0 + pc.progress * 5.0) * 0.5 + 0.5;
-    vec3 bubble_color = mix(
-        mix(vec3(0.8, 0.2, 1.0), vec3(0.2, 0.8, 1.0), iridescence),      // purple to cyan
-        mix(vec3(1.0, 0.5, 0.8), vec3(0.3, 1.0, 0.5), iridescence),      // pink to green
-        sin(cell_noise * 6.28) * 0.5 + 0.5
-    );
+    // Turbulent energy field
+    float energy_turb = fbm(v_uv * 20.0 + prog * 3.0);
+    float energy_intensity = edge_proximity * (0.6 + 0.4 * energy_turb);
+    energy_intensity += crack_energy * 1.5 + fine_crack * 0.8;
 
-    // Cells near edge float upward before popping
-    float lift = near_edge * 0.03;
-    vec2 lifted_uv = v_uv + vec2((cell_noise - 0.5) * near_edge * 0.02, -lift);
-    lifted_uv = clamp(lifted_uv, 0.0, 1.0);
+    // HDR energy glow
+    vec3 energy = energy_color(energy_intensity) * energy_intensity * 2.5;
 
-    vec4 lifted_old = vec4(0.0, 0.0, 0.0, 1.0);
-    vec2 lo_uv = lifted_uv;
-    if (apply_resize(lo_uv, pc.old_resize_mode, pc.old_img_aspect, pc.screen_aspect))
-        lifted_old = texture(u_old, lo_uv);
+    // Secondary outer glow (softer, wider)
+    float outer_glow = smoothstep(0.2, 0.0, abs(edge_dist)) * 0.3;
+    energy += energy_color(0.3) * outer_glow;
 
-    // Fade out cells as they lift
-    float fade = smoothstep(0.0, 0.08, edge_dist);
-    vec4 old_lifted = mix(old_color, lifted_old, near_edge);
-    old_lifted.rgb *= fade;
+    // --- Electric arcs along cracks ---
+    float arc_noise = vnoise(v_uv * 80.0 + vec2(prog * 10.0, 0.0));
+    float arc = step(0.85, arc_noise) * edge_proximity * 2.0;
+    energy += vec3(0.7, 0.8, 1.0) * arc;
 
-    // Base compositing
-    vec4 base = mix(new_color, old_lifted, 1.0 - dissolved);
+    // --- Ember/spark particles flying from the edge ---
+    float spark_noise = hash1(floor(v_uv * 200.0) + vec2(floor(prog * 20.0)));
+    float spark_vis = step(0.97, spark_noise) * edge_proximity;
 
-    // Bubble membrane glow on surviving cells
-    float membrane_glow = membrane * (1.0 - dissolved) * 0.4;
-    base.rgb += bubble_color * membrane_glow;
+    // Sparks have random warm colors
+    vec3 spark_color = mix(vec3(1.0, 0.8, 0.3), vec3(0.5, 0.7, 1.0), hash1(floor(v_uv * 200.0)));
+    energy += spark_color * spark_vis * 3.0;
 
-    // Iridescent pop flash at disintegration edge
-    float pop_flash = near_edge * membrane * 1.5;
-    base.rgb += bubble_color * pop_flash;
+    // --- Fine dust particles in the wake ---
+    float dust_zone = smoothstep(0.0, 0.25, -edge_dist) * (1.0 - smoothstep(0.25, 0.5, -edge_dist));
+    float dust = hash1(floor(v_uv * base_scale * 6.0) + vec2(floor(prog * 8.0)));
+    float dust_vis = step(0.9, dust) * dust_zone * 0.4;
+    float dust_lum = hash1(floor(v_uv * base_scale * 6.0) * 3.7);
+    base += mix(vec3(0.8, 0.7, 0.6), vec3(0.3, 0.4, 0.6), dust_lum) * dust_vis;
 
-    // Faint sparkle particles at edge
-    float sparkle = hash(v_uv * 300.0 + vec2(pc.progress * 50.0));
-    float sparkle_vis = step(0.96, sparkle) * near_edge * 1.5;
-    base.rgb += vec3(1.0, 0.95, 0.9) * sparkle_vis;
+    // --- Compose final ---
+    vec3 final_color = base + energy;
 
-    f_color = vec4(clamp(base.rgb, 0.0, 1.0), 1.0);
+    // Subtle vignette darkening on fully dissolved areas (enhances depth)
+    float depth_dark = dissolved * 0.05;
+    final_color -= depth_dark;
+
+    f_color = vec4(clamp(final_color, 0.0, 1.0), 1.0);
 }
