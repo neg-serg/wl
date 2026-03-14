@@ -159,7 +159,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .get("wallpaper.vert")
             .expect("wallpaper.vert missing");
         let frag_modules: Vec<(TransitionKind, _)> = [
-            (TransitionKind::Fade, "transition_fade.frag"),
             (TransitionKind::Wipe, "transition_wipe.frag"),
             (TransitionKind::Wave, "transition_wave.frag"),
             (TransitionKind::Outer, "transition_outer.frag"),
@@ -175,14 +174,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             (TransitionKind::Morph, "transition_morph.frag"),
             (TransitionKind::Hexagonalize, "transition_hexagonalize.frag"),
             (TransitionKind::CrossZoom, "transition_cross_zoom.frag"),
-            (TransitionKind::FilmBurn, "transition_film_burn.frag"),
             (TransitionKind::CircleCrop, "transition_circle_crop.frag"),
-            (
-                TransitionKind::FluidDistortion,
-                "transition_fluid_distortion.frag",
-            ),
             (TransitionKind::InkBleed, "transition_ink_bleed.frag"),
-            (TransitionKind::LavaLamp, "transition_lava_lamp.frag"),
             (
                 TransitionKind::ChromaticAberration,
                 "transition_chromatic_aberration.frag",
@@ -192,10 +185,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "transition_lens_distortion.frag",
             ),
             (TransitionKind::CrtShutdown, "transition_crt_shutdown.frag"),
-            (
-                TransitionKind::AsciiDissolve,
-                "transition_ascii_dissolve.frag",
-            ),
             (TransitionKind::PerlinWipe, "transition_perlin_wipe.frag"),
             (TransitionKind::RadialBlur, "transition_radial_blur.frag"),
         ]

@@ -202,7 +202,6 @@ pub enum UpscaleMode {
 
 #[derive(Clone, ValueEnum)]
 pub enum TransitionTypeArg {
-    Fade,
     Wipe,
     Wave,
     Outer,
@@ -215,15 +214,11 @@ pub enum TransitionTypeArg {
     Morph,
     Hexagonalize,
     CrossZoom,
-    FilmBurn,
     CircleCrop,
-    FluidDistortion,
     InkBleed,
-    LavaLamp,
     ChromaticAberration,
     LensDistortion,
     CrtShutdown,
-    AsciiDissolve,
     PerlinWipe,
     RadialBlur,
     Random,
@@ -251,7 +246,6 @@ fn parse_upscale_scale(s: &str) -> Result<u8, String> {
 impl From<TransitionTypeArg> for wl_common::ipc_types::TransitionType {
     fn from(arg: TransitionTypeArg) -> Self {
         match arg {
-            TransitionTypeArg::Fade => Self::Fade,
             TransitionTypeArg::Wipe => Self::Wipe,
             TransitionTypeArg::Wave => Self::Wave,
             TransitionTypeArg::Outer => Self::Outer,
@@ -264,15 +258,11 @@ impl From<TransitionTypeArg> for wl_common::ipc_types::TransitionType {
             TransitionTypeArg::Morph => Self::Morph,
             TransitionTypeArg::Hexagonalize => Self::Hexagonalize,
             TransitionTypeArg::CrossZoom => Self::CrossZoom,
-            TransitionTypeArg::FilmBurn => Self::FilmBurn,
             TransitionTypeArg::CircleCrop => Self::CircleCrop,
-            TransitionTypeArg::FluidDistortion => Self::FluidDistortion,
             TransitionTypeArg::InkBleed => Self::InkBleed,
-            TransitionTypeArg::LavaLamp => Self::LavaLamp,
             TransitionTypeArg::ChromaticAberration => Self::ChromaticAberration,
             TransitionTypeArg::LensDistortion => Self::LensDistortion,
             TransitionTypeArg::CrtShutdown => Self::CrtShutdown,
-            TransitionTypeArg::AsciiDissolve => Self::AsciiDissolve,
             TransitionTypeArg::PerlinWipe => Self::PerlinWipe,
             TransitionTypeArg::RadialBlur => Self::RadialBlur,
             TransitionTypeArg::Random => Self::Random,

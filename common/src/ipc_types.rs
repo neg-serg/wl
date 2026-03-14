@@ -37,7 +37,6 @@ pub enum IpcCommand {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum TransitionType {
-    Fade,
     Wipe,
     Wave,
     Outer,
@@ -50,15 +49,11 @@ pub enum TransitionType {
     Morph,
     Hexagonalize,
     CrossZoom,
-    FilmBurn,
     CircleCrop,
-    FluidDistortion,
     InkBleed,
-    LavaLamp,
     ChromaticAberration,
     LensDistortion,
     CrtShutdown,
-    AsciiDissolve,
     PerlinWipe,
     RadialBlur,
     Random,
