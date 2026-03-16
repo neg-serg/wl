@@ -129,7 +129,7 @@ pub fn upload_rgba8_texture(
     // --- Create the device-local image ---
     let image_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
-        .format(vk::Format::R8G8B8A8_SRGB)
+        .format(vk::Format::R8G8B8A8_UNORM)
         .extent(vk::Extent3D {
             width,
             height,
@@ -330,7 +330,7 @@ pub fn upload_rgba8_texture(
     let view_info = vk::ImageViewCreateInfo::default()
         .image(image)
         .view_type(vk::ImageViewType::TYPE_2D)
-        .format(vk::Format::R8G8B8A8_SRGB)
+        .format(vk::Format::R8G8B8A8_UNORM)
         .components(vk::ComponentMapping {
             r: vk::ComponentSwizzle::IDENTITY,
             g: vk::ComponentSwizzle::IDENTITY,

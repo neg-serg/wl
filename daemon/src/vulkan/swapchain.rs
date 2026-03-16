@@ -292,24 +292,41 @@ impl Swapchain {
                 .map_err(VulkanError::SwapchainCreation)?
         };
 
-        // Prefer B8G8R8A8_SRGB, then R8G8B8A8_SRGB, then fall back to first available.
+        // Prefer UNORM formats to avoid unnecessary sRGB decode/encode round-trips
+        // on the GPU. The SRGB_NONLINEAR color space tells the compositor that pixel
+        // data is sRGB-encoded, which is correct since our source images are already sRGB.
         let preferred = formats
             .iter()
             .find(|f| {
-                f.format == vk::Format::B8G8R8A8_SRGB
+                f.format == vk::Format::B8G8R8A8_UNORM
                     && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
             })
             .or_else(|| {
                 formats.iter().find(|f| {
-                    f.format == vk::Format::R8G8B8A8_SRGB
+                    f.format == vk::Format::R8G8B8A8_UNORM
+                        && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+                })
+            })
+            .or_else(|| {
+                formats.iter().find(|f| {
+                    f.format == vk::Format::B8G8R8A8_SRGB
                         && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
                 })
             })
             .or(formats.first());
 
-        preferred
+        let chosen = preferred
             .copied()
-            .ok_or_else(|| VulkanError::Other("no surface formats available".to_string()))
+            .ok_or_else(|| VulkanError::Other("no surface formats available".to_string()))?;
+
+        tracing::info!(
+            "swapchain format: {:?}, color_space: {:?} (available: {:?})",
+            chosen.format,
+            chosen.color_space,
+            formats.iter().map(|f| (f.format, f.color_space)).collect::<Vec<_>>()
+        );
+
+        Ok(chosen)
     }
 
     fn choose_extent(
