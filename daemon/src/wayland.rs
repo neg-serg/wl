@@ -11,6 +11,7 @@ use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
 };
+use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 // ---------------------------------------------------------------------------
@@ -84,6 +85,7 @@ pub struct OutputData {
     pub layer_surface: Option<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1>,
     pub configured: bool,
     pub fractional_scale: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
+    pub viewport: Option<wp_viewport::WpViewport>,
 }
 
 impl OutputData {
@@ -99,6 +101,7 @@ impl OutputData {
             layer_surface: None,
             configured: false,
             fractional_scale: None,
+            viewport: None,
         }
     }
 }
@@ -113,6 +116,7 @@ pub struct WaylandData {
     pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     pub fractional_scale_manager:
         Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
+    pub viewporter: Option<wp_viewporter::WpViewporter>,
     pub outputs: Vec<OutputData>,
     pub globals_done: bool,
 }
@@ -123,6 +127,7 @@ impl WaylandData {
             compositor: None,
             layer_shell: None,
             fractional_scale_manager: None,
+            viewporter: None,
             outputs: Vec::new(),
             globals_done: false,
         }
@@ -287,10 +292,21 @@ impl WaylandState {
             .as_ref()
             .map(|mgr| mgr.get_fractional_scale(&surface, &qh, ()));
 
+        // Create viewport for HiDPI: buffer at physical resolution, displayed at logical size.
+        let viewport = self
+            .data
+            .viewporter
+            .as_ref()
+            .map(|vp| {
+                let viewport = vp.get_viewport(&surface, &qh, ());
+                viewport
+            });
+
         let output = &mut self.data.outputs[output_index];
         output.surface = Some(surface);
         output.layer_surface = Some(layer_surface);
         output.fractional_scale = fractional_scale;
+        output.viewport = viewport;
         output.configured = false;
 
         tracing::debug!(
@@ -420,6 +436,17 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandData {
                         );
                     tracing::debug!(version, "bound wp_fractional_scale_manager_v1");
                     state.fractional_scale_manager = Some(mgr);
+                }
+                "wp_viewporter" => {
+                    let vp = registry
+                        .bind::<wp_viewporter::WpViewporter, _, _>(
+                            name,
+                            version.min(1),
+                            qh,
+                            (),
+                        );
+                    tracing::debug!(version, "bound wp_viewporter");
+                    state.viewporter = Some(vp);
                 }
                 "wl_output" => {
                     let output =
@@ -593,6 +620,12 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for WaylandData {
                     }
                     output.configured = true;
 
+                    // Set viewport destination to logical size so the compositor
+                    // knows the buffer (at physical resolution) maps to this area.
+                    if let Some(ref vp) = output.viewport {
+                        vp.set_destination(output.width as i32, output.height as i32);
+                    }
+
                     tracing::debug!(
                         width,
                         height,
@@ -671,6 +704,40 @@ impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for WaylandData {
                 );
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch: wp_viewporter
+// ---------------------------------------------------------------------------
+
+impl Dispatch<wp_viewporter::WpViewporter, ()> for WaylandData {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wp_viewporter::WpViewporter,
+        _event: wp_viewporter::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // The viewporter global has no events.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch: wp_viewport
+// ---------------------------------------------------------------------------
+
+impl Dispatch<wp_viewport::WpViewport, ()> for WaylandData {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wp_viewport::WpViewport,
+        _event: wp_viewport::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // Viewport has no client-side events.
     }
 }
 
