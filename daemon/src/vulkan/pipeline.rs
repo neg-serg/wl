@@ -299,9 +299,9 @@ impl WallpaperPipeline {
 
     fn create_sampler(device: &ash::Device) -> Result<vk::Sampler, VulkanError> {
         let sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::LINEAR)
-            .min_filter(vk::Filter::LINEAR)
-            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+            .mag_filter(vk::Filter::NEAREST)
+            .min_filter(vk::Filter::NEAREST)
+            .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
             .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
             .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
             .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
@@ -506,7 +506,7 @@ impl TransitionPipeline {
         }
 
         let descriptor_pool = Self::create_descriptor_pool(device)?;
-        let sampler = WallpaperPipeline::create_sampler(device)?;
+        let sampler = Self::create_sampler(device)?;
 
         Ok(Self {
             render_pass,
@@ -516,6 +516,34 @@ impl TransitionPipeline {
             descriptor_pool,
             sampler,
         })
+    }
+
+    /// Create a sampler with linear filtering for smooth transition blending.
+    fn create_sampler(device: &ash::Device) -> Result<vk::Sampler, VulkanError> {
+        let sampler_info = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR)
+            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .mip_lod_bias(0.0)
+            .anisotropy_enable(false)
+            .max_anisotropy(1.0)
+            .compare_enable(false)
+            .min_lod(0.0)
+            .max_lod(0.0)
+            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
+            .unnormalized_coordinates(false);
+
+        // SAFETY: device is a valid logical device handle.
+        let sampler = unsafe {
+            device
+                .create_sampler(&sampler_info, None)
+                .map_err(|e| VulkanError::PipelineCreation(format!("transition sampler: {e}")))?
+        };
+
+        Ok(sampler)
     }
 
     /// Descriptor set layout with two combined image samplers (old + new).
