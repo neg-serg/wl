@@ -122,6 +122,10 @@ pub struct OutputInfo {
     pub wallpaper_path: Option<String>,
     pub dimensions: Option<(u32, u32)>,
     pub state: OutputState,
+    /// Physical output resolution (logical × scale_factor). Used by client
+    /// for neural upscale target computation.
+    #[serde(default)]
+    pub physical_resolution: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -451,6 +451,7 @@ fn handle_command(daemon: &mut DaemonState, cmd: IpcCommand) -> IpcResponse {
                     } else {
                         OutputState::Idle
                     },
+                    physical_resolution: Some(o.effective_resolution()),
                 })
                 .collect();
             IpcResponse::QueryResult { outputs }
