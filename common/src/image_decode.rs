@@ -174,6 +174,18 @@ pub fn resize_for_output(
         .expect("DecodedImage data length must match width*height*4");
 
     match mode {
+        ResizeMode::Center => {
+            let mut canvas = RgbaImage::from_pixel(target_w, target_h, image::Rgba([0, 0, 0, 255]));
+            let paste_w = img.width.min(target_w);
+            let paste_h = img.height.min(target_h);
+            let dst_x = (target_w.saturating_sub(paste_w)) / 2;
+            let dst_y = (target_h.saturating_sub(paste_h)) / 2;
+            let src_x = (img.width.saturating_sub(target_w)) / 2;
+            let src_y = (img.height.saturating_sub(target_h)) / 2;
+            let cropped = image::imageops::crop_imm(&src, src_x, src_y, paste_w, paste_h);
+            image::imageops::overlay(&mut canvas, &*cropped, dst_x as i64, dst_y as i64);
+            DecodedImage { data: canvas.into_raw(), width: target_w, height: target_h }
+        }
         ResizeMode::Crop => {
             let src_aspect = img.width as f64 / img.height as f64;
             let tgt_aspect = target_w as f64 / target_h as f64;

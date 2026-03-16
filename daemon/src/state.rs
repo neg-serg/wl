@@ -36,6 +36,7 @@ impl DaemonState {
                             ResizeMode::Crop => "crop".to_string(),
                             ResizeMode::Fit => "fit".to_string(),
                             ResizeMode::No => "no".to_string(),
+                            ResizeMode::Center => "center".to_string(),
                         },
                     },
                 );

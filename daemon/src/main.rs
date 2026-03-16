@@ -702,6 +702,13 @@ fn handle_img(
         let first_output = names.first().and_then(|n| daemon.outputs.get(n));
         let resized = if let Some(output) = first_output {
             let (eff_w, eff_h) = output.effective_resolution();
+            info!(
+                img_w = original_w, img_h = original_h,
+                eff_w = eff_w, eff_h = eff_h,
+                scale = output.scale_factor,
+                logical_w = output.width, logical_h = output.height,
+                "pre-resize: image vs effective resolution"
+            );
             wl_common::image_decode::resize_for_output(decoded, eff_w, eff_h, resize)
         } else {
             decoded
@@ -969,6 +976,7 @@ fn handle_restore(daemon: &mut DaemonState) -> IpcResponse {
                 "crop" => ResizeMode::Crop,
                 "fit" => ResizeMode::Fit,
                 "no" => ResizeMode::No,
+                "center" => ResizeMode::Center,
                 _ => ResizeMode::Crop,
             };
 

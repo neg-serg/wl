@@ -58,21 +58,6 @@ pub enum Commands {
         /// Wave frequency and amplitude as "freq,amp"
         #[arg(long, default_value = "20,20")]
         transition_wave: String,
-
-        /// Upscale low-resolution images using a neural network before display.
-        /// Values: once (default), always (persist), never (skip), off (disable persistent)
-        #[arg(long, num_args(0..=1), default_missing_value = "once")]
-        upscale: Option<UpscaleMode>,
-
-        /// Custom upscaler command (implies --upscale).
-        /// Use {input} and {output} placeholders, or paths are appended as arguments.
-        #[arg(long)]
-        upscale_cmd: Option<String>,
-
-        /// Force a specific upscale factor (2, 4, 8, or 16) instead of auto-detecting.
-        /// Values above 4 use multiple upscaling passes. Implies --upscale.
-        #[arg(long, value_parser = parse_upscale_scale)]
-        upscale_scale: Option<u8>,
     },
 
     /// Clear wallpaper to solid color
@@ -151,18 +136,6 @@ pub enum Commands {
         #[arg(long, default_value = "20,20")]
         transition_wave: String,
 
-        /// Upscale low-resolution images using a neural network before display
-        #[arg(long, num_args(0..=1), default_missing_value = "once")]
-        upscale: Option<UpscaleMode>,
-
-        /// Custom upscaler command (implies --upscale)
-        #[arg(long)]
-        upscale_cmd: Option<String>,
-
-        /// Force a specific upscale factor (2, 4, 8, or 16). Implies --upscale.
-        #[arg(long, value_parser = parse_upscale_scale)]
-        upscale_scale: Option<u8>,
-
         /// Disable copying wallpaper to greeter cache
         #[arg(long)]
         no_greeter_sync: bool,
@@ -186,18 +159,7 @@ pub enum ResizeArg {
     Crop,
     Fit,
     No,
-}
-
-#[derive(Clone, ValueEnum)]
-pub enum UpscaleMode {
-    /// Upscale this image only (default when --upscale is used without a value)
-    Once,
-    /// Enable persistent upscaling for all future images
-    Always,
-    /// Skip upscaling for this image (don't change persistent setting)
-    Never,
-    /// Disable persistent upscaling
-    Off,
+    Center,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -236,15 +198,8 @@ impl From<ResizeArg> for wl_common::ipc_types::ResizeMode {
             ResizeArg::Crop => Self::Crop,
             ResizeArg::Fit => Self::Fit,
             ResizeArg::No => Self::No,
+            ResizeArg::Center => Self::Center,
         }
-    }
-}
-
-fn parse_upscale_scale(s: &str) -> Result<u8, String> {
-    let n: u8 = s.parse().map_err(|_| format!("invalid scale: '{s}'"))?;
-    match n {
-        2 | 4 | 8 | 16 => Ok(n),
-        _ => Err("upscale scale must be 2, 4, 8, or 16".to_string()),
     }
 }
 
