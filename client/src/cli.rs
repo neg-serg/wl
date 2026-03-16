@@ -27,6 +27,18 @@ pub enum Commands {
         #[arg(long, default_value = "crop")]
         resize: ResizeArg,
 
+        /// Neural upscale mode
+        #[arg(long)]
+        upscale: Option<UpscaleMode>,
+
+        /// Custom upscaler command (with {input} and {output} placeholders)
+        #[arg(long)]
+        upscale_cmd: Option<String>,
+
+        /// Force upscale factor (2 or 4)
+        #[arg(long)]
+        upscale_scale: Option<u8>,
+
         /// Transition type
         #[arg(long, default_value = "random")]
         transition_type: TransitionTypeArg,
@@ -104,6 +116,18 @@ pub enum Commands {
         #[arg(long, default_value = "crop")]
         resize: ResizeArg,
 
+        /// Neural upscale mode
+        #[arg(long)]
+        upscale: Option<UpscaleMode>,
+
+        /// Custom upscaler command (with {input} and {output} placeholders)
+        #[arg(long)]
+        upscale_cmd: Option<String>,
+
+        /// Force upscale factor (2 or 4)
+        #[arg(long)]
+        upscale_scale: Option<u8>,
+
         /// Transition type
         #[arg(long, default_value = "random")]
         transition_type: TransitionTypeArg,
@@ -152,6 +176,18 @@ pub enum Commands {
         #[arg(long, default_value = "~/.cache/quickshell-wallpaper-path")]
         notify_path: String,
     },
+}
+
+#[derive(Clone, ValueEnum)]
+pub enum UpscaleMode {
+    /// Upscale this image only
+    Once,
+    /// Enable persistent upscaling for all future commands
+    Always,
+    /// Skip upscaling for this image only
+    Never,
+    /// Disable persistent upscaling
+    Off,
 }
 
 #[derive(Clone, ValueEnum)]

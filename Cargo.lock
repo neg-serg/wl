@@ -2024,6 +2024,7 @@ dependencies = [
  "bincode",
  "clap",
  "getrandom 0.2.17",
+ "image",
  "nix",
  "tokio",
  "walkdir",

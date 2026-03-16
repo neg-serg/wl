@@ -2,6 +2,7 @@ mod cli;
 mod daemon;
 mod ipc;
 mod random;
+mod upscale;
 
 use clap::Parser;
 
@@ -20,6 +21,50 @@ async fn main() {
     }
 }
 
+/// Resolve whether upscaling should happen based on CLI flag and persistent prefs.
+/// Returns (should_upscale, effective_cmd, effective_scale).
+fn resolve_upscale(
+    mode: &Option<UpscaleMode>,
+    cmd: &Option<String>,
+    scale: &Option<u8>,
+    prefs: &mut wl_common::cache::UpscalePrefs,
+) -> (bool, Option<String>, Option<u8>) {
+    match mode {
+        Some(UpscaleMode::Never) => (false, None, None),
+        Some(UpscaleMode::Off) => {
+            prefs.enabled = false;
+            prefs.custom_cmd = None;
+            prefs.scale = None;
+            if let Err(e) = wl_common::cache::save_upscale_prefs(prefs) {
+                eprintln!("Warning: failed to save upscale prefs: {e}");
+            }
+            eprintln!("Upscale mode: off (saved)");
+            (false, None, None)
+        }
+        Some(UpscaleMode::Always) => {
+            prefs.enabled = true;
+            prefs.custom_cmd = cmd.clone();
+            prefs.scale = *scale;
+            if let Err(e) = wl_common::cache::save_upscale_prefs(prefs) {
+                eprintln!("Warning: failed to save upscale prefs: {e}");
+            }
+            eprintln!("Upscale mode: always (saved)");
+            (true, cmd.clone(), *scale)
+        }
+        Some(UpscaleMode::Once) => (true, cmd.clone(), *scale),
+        None => {
+            // No flag: check persistent prefs
+            if prefs.enabled {
+                let eff_cmd = cmd.clone().or_else(|| prefs.custom_cmd.clone());
+                let eff_scale = scale.or(prefs.scale);
+                (true, eff_cmd, eff_scale)
+            } else {
+                (false, None, None)
+            }
+        }
+    }
+}
+
 async fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
         Commands::Init => {
@@ -34,6 +79,9 @@ async fn run(cli: Cli) -> Result<(), String> {
             path,
             outputs,
             resize,
+            upscale: upscale_mode,
+            upscale_cmd,
+            upscale_scale,
             transition_type,
             transition_duration,
             transition_step,
@@ -48,8 +96,19 @@ async fn run(cli: Cli) -> Result<(), String> {
             let wave = parse_wave(&transition_wave)?;
             let parsed_outputs = parse_outputs(&outputs);
 
+            // Resolve upscale
+            let mut prefs = wl_common::cache::load_upscale_prefs();
+            let (should_upscale, eff_cmd, eff_scale) =
+                resolve_upscale(&upscale_mode, &upscale_cmd, &upscale_scale, &mut prefs);
+
+            let final_path = if should_upscale {
+                upscale::upscale_image(&path, &eff_cmd, &eff_scale, &parsed_outputs).await
+            } else {
+                path
+            };
+
             let cmd = IpcCommand::Img {
-                path,
+                path: final_path,
                 outputs: parsed_outputs,
                 resize: resize.into(),
                 transition: TransitionParams {
@@ -116,6 +175,9 @@ async fn run(cli: Cli) -> Result<(), String> {
             directories,
             outputs,
             resize,
+            upscale: upscale_mode,
+            upscale_cmd,
+            upscale_scale,
             transition_type,
             transition_duration,
             transition_step,
@@ -147,8 +209,19 @@ async fn run(cli: Cli) -> Result<(), String> {
                 daemon::init().await?;
             }
 
+            // Resolve upscale
+            let mut prefs = wl_common::cache::load_upscale_prefs();
+            let (should_upscale, eff_cmd, eff_scale) =
+                resolve_upscale(&upscale_mode, &upscale_cmd, &upscale_scale, &mut prefs);
+
+            let final_path = if should_upscale {
+                upscale::upscale_image(&path, &eff_cmd, &eff_scale, &parsed_outputs).await
+            } else {
+                path
+            };
+
             let cmd = IpcCommand::Img {
-                path,
+                path: final_path,
                 outputs: parsed_outputs,
                 resize: resize.into(),
                 transition: TransitionParams {
