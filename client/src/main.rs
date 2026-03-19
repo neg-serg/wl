@@ -171,6 +171,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             .await
         }
         Commands::ClearCache => send_and_check(IpcCommand::ClearCache).await,
+        Commands::Rotate { action } => handle_rotate(action).await,
         Commands::Random {
             directories,
             outputs,
@@ -254,6 +255,131 @@ async fn run(cli: Cli) -> Result<(), String> {
     }
 }
 
+async fn handle_rotate(action: cli::RotateAction) -> Result<(), String> {
+    match action {
+        cli::RotateAction::Start {
+            directories,
+            interval,
+            resize,
+            transition_type,
+            transition_duration,
+            transition_step,
+            transition_fps,
+            transition_angle,
+            transition_pos,
+            transition_bezier,
+            transition_wave,
+            upscale,
+            upscale_cmd,
+            upscale_scale,
+        } => {
+            // Parse interval
+            let duration = wl_common::duration_parse::parse_duration(&interval).map_err(|e| {
+                format!(
+                    "{e}\n\nExpected formats: \"30m\", \"1h30m\", \"2h\", \"45s\", \"1d\", or a plain number (minutes)"
+                )
+            })?;
+
+            // Validate directories exist
+            for dir in &directories {
+                if !dir.is_dir() {
+                    return Err(format!("'{}' is not a directory", dir.display()));
+                }
+            }
+
+            let position = parse_position(&transition_pos)?;
+            let bezier = parse_bezier(&transition_bezier)?;
+            let wave = parse_wave(&transition_wave)?;
+
+            let upscale_mode_str = upscale.as_ref().map(|m| match m {
+                UpscaleMode::Once => "once".to_string(),
+                UpscaleMode::Always => "always".to_string(),
+                UpscaleMode::Never => "never".to_string(),
+                UpscaleMode::Off => "off".to_string(),
+            });
+
+            let cmd = IpcCommand::RotateStart {
+                directories,
+                interval_secs: duration.as_secs(),
+                resize: resize.into(),
+                transition: TransitionParams {
+                    transition_type: transition_type.into(),
+                    duration_secs: transition_duration,
+                    step: transition_step,
+                    fps: transition_fps,
+                    angle: transition_angle,
+                    position,
+                    bezier,
+                    wave,
+                },
+                upscale_mode: upscale_mode_str,
+                upscale_cmd,
+                upscale_scale,
+            };
+
+            send_and_check(cmd).await?;
+            let interval_str = wl_common::duration_parse::format_duration(duration.as_secs());
+            eprintln!("Rotation started (interval: {interval_str})");
+            Ok(())
+        }
+        cli::RotateAction::Stop => {
+            send_and_check(IpcCommand::RotateStop).await?;
+            eprintln!("Rotation stopped");
+            Ok(())
+        }
+        cli::RotateAction::Status => {
+            let mut client = connect_or_error().await?;
+            let response = client
+                .send_command(&IpcCommand::RotateStatus)
+                .await
+                .map_err(|e| format!("query failed: {e}"))?;
+
+            match response {
+                IpcResponse::RotationStatus {
+                    active,
+                    interval_secs,
+                    directories,
+                    next_change_secs,
+                    images_total,
+                    images_remaining,
+                } => {
+                    if active {
+                        let interval_str = interval_secs
+                            .map(wl_common::duration_parse::format_duration)
+                            .unwrap_or_default();
+                        let dirs_str = directories
+                            .as_ref()
+                            .map(|d| d.join(", "))
+                            .unwrap_or_default();
+                        let next_str = next_change_secs
+                            .map(wl_common::duration_parse::format_duration)
+                            .unwrap_or_default();
+                        let total = images_total.unwrap_or(0);
+                        let remaining = images_remaining.unwrap_or(0);
+                        let shown = total - remaining;
+
+                        println!("Rotation: active");
+                        println!("Interval: {interval_str}");
+                        println!("Directories: {dirs_str}");
+                        println!("Next change: {next_str}");
+                        println!("Progress: {shown}/{total} images (cycle)");
+                    } else {
+                        println!("Rotation: inactive");
+                    }
+                    Ok(())
+                }
+                IpcResponse::Error { message } => Err(message),
+                _ => Err("unexpected response".to_string()),
+            }
+        }
+        cli::RotateAction::Next => {
+            send_and_check(IpcCommand::RotateNext).await?;
+            eprintln!("Skipped to next wallpaper");
+            Ok(())
+        }
+    }
+}
+
 fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/")
         && let Ok(home) = std::env::var("HOME")
@@ -265,9 +391,7 @@ fn expand_tilde(path: &str) -> String {
 
 async fn connect_or_error() -> Result<IpcClient, String> {
     IpcClient::connect().await.map_err(|e| match e {
-        IpcError::DaemonNotRunning => {
-            "daemon is not running. Start it with 'wl init'.".to_string()
-        }
+        IpcError::DaemonNotRunning => "daemon is not running. Start it with 'wl init'.".to_string(),
         other => format!("failed to connect: {other}"),
     })
 }

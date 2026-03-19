@@ -2043,6 +2043,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "walkdir",
 ]
 
 [[package]]
@@ -2058,6 +2059,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "walkdir",
  "wayland-backend",
  "wayland-client",
  "wayland-protocols",

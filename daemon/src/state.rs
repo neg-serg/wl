@@ -4,6 +4,7 @@ use wl_common::cache::{self, OutputSessionState, SessionState};
 use wl_common::ipc_types::ResizeMode;
 
 use crate::output::Output;
+use crate::rotation::RotationState;
 use crate::vulkan::VulkanContext;
 use crate::vulkan::pipeline::{TransitionPipeline, WallpaperPipeline};
 use crate::vulkan::shaders::ShaderModules;
@@ -19,6 +20,7 @@ pub struct DaemonState {
     pub session_cache_path: std::path::PathBuf,
     pub image_cache_path: std::path::PathBuf,
     pub running: bool,
+    pub rotation: Option<RotationState>,
 }
 
 impl DaemonState {

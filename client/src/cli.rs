@@ -102,6 +102,12 @@ pub enum Commands {
     /// Remove all cached image data
     ClearCache,
 
+    /// Auto-rotate wallpapers from directories at a time interval
+    Rotate {
+        #[command(subcommand)]
+        action: RotateAction,
+    },
+
     /// Set a random wallpaper from specified directories
     Random {
         /// Directories to scan recursively for image files
@@ -176,6 +182,77 @@ pub enum Commands {
         #[arg(long, default_value = "~/.cache/quickshell-wallpaper-path")]
         notify_path: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum RotateAction {
+    /// Start or replace wallpaper rotation
+    Start {
+        /// Directories to scan recursively for image files
+        #[arg(required = true, num_args = 1..)]
+        directories: Vec<PathBuf>,
+
+        /// Rotation interval (e.g., "30m", "1h30m", "90", "2h", "45s")
+        #[arg(short, long, default_value = "30m")]
+        interval: String,
+
+        /// Resize mode
+        #[arg(long, default_value = "crop")]
+        resize: ResizeArg,
+
+        /// Transition type
+        #[arg(long, default_value = "random")]
+        transition_type: TransitionTypeArg,
+
+        /// Transition duration in seconds
+        #[arg(long, default_value = "0.5")]
+        transition_duration: f32,
+
+        /// Frame step size (1-255)
+        #[arg(long, default_value = "90")]
+        transition_step: u8,
+
+        /// Target transition FPS
+        #[arg(long, default_value = "30")]
+        transition_fps: u32,
+
+        /// Angle in degrees (for wipe)
+        #[arg(long, default_value = "45")]
+        transition_angle: f32,
+
+        /// Position as "x,y" normalized or "center" (for grow)
+        #[arg(long, default_value = "center")]
+        transition_pos: String,
+
+        /// Cubic bezier control points as "a,b,c,d"
+        #[arg(long, default_value = ".25,.1,.25,1")]
+        transition_bezier: String,
+
+        /// Wave frequency and amplitude as "freq,amp"
+        #[arg(long, default_value = "20,20")]
+        transition_wave: String,
+
+        /// Neural upscale mode
+        #[arg(long)]
+        upscale: Option<UpscaleMode>,
+
+        /// Custom upscaler command (with {input} and {output} placeholders)
+        #[arg(long)]
+        upscale_cmd: Option<String>,
+
+        /// Force upscale factor (2 or 4)
+        #[arg(long)]
+        upscale_scale: Option<u8>,
+    },
+
+    /// Stop active wallpaper rotation
+    Stop,
+
+    /// Show current rotation status
+    Status,
+
+    /// Skip to next wallpaper immediately
+    Next,
 }
 
 #[derive(Clone, ValueEnum)]

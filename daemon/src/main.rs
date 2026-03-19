@@ -2,6 +2,7 @@ mod animation;
 mod ipc;
 mod output;
 mod render;
+mod rotation;
 mod state;
 mod transition;
 mod vulkan;
@@ -184,14 +185,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "transition_fluid_distortion.frag",
             ),
             (TransitionKind::FluidDrain, "transition_fluid_drain.frag"),
-            (
-                TransitionKind::FluidRipple,
-                "transition_fluid_ripple.frag",
-            ),
-            (
-                TransitionKind::FluidVortex,
-                "transition_fluid_vortex.frag",
-            ),
+            (TransitionKind::FluidRipple, "transition_fluid_ripple.frag"),
+            (TransitionKind::FluidVortex, "transition_fluid_vortex.frag"),
             (TransitionKind::FluidWave, "transition_fluid_wave.frag"),
             (TransitionKind::InkBleed, "transition_ink_bleed.frag"),
             (TransitionKind::LavaLamp, "transition_lava_lamp.frag"),
@@ -244,6 +239,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         session_cache_path: wl_common::cache::state_dir(),
         image_cache_path: wl_common::cache::cache_dir(),
         running: true,
+        rotation: None,
     };
 
     // 9. Initial render: solid black on all outputs
@@ -261,6 +257,21 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 warn!(output = %output.name, "initial render failed: {e}");
             }
         }
+    }
+
+    // 9b. Restore rotation state from disk if available
+    if let Some(persist) = wl_common::cache::load_rotation_state() {
+        let mut rot = rotation::RotationState::from_persist(&persist);
+        // Set timer: fire immediately if we've been down longer than the interval,
+        // otherwise resume with remaining time
+        rot.reset_timer();
+        info!(
+            interval_secs = rot.interval.as_secs(),
+            images = rot.candidates.len(),
+            index = rot.current_index,
+            "rotation restored from disk"
+        );
+        daemon.rotation = Some(rot);
     }
 
     info!("daemon ready");
@@ -283,9 +294,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Err(ipc::IpcError::Io(ref e))
                         if e.kind() == std::io::ErrorKind::UnexpectedEof =>
                     {
-                        // Probe connections (health checks) connect and
-                        // immediately disconnect without sending a command.
-                        // This is expected — log at debug, not warn.
                         debug!("IPC probe connection (client disconnected without sending a command)");
                     }
                     Err(e) => {
@@ -294,6 +302,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             _ = tokio::time::sleep(std::time::Duration::from_millis(16)) => {}
+        }
+
+        // Check if rotation timer has elapsed
+        if daemon.rotation.is_some() {
+            let elapsed = daemon
+                .rotation
+                .as_ref()
+                .map(|r| r.time_until_next().is_zero())
+                .unwrap_or(false);
+            if elapsed {
+                tick_rotation(&mut daemon);
+            }
         }
 
         if let Err(e) = wl.dispatch_pending() {
@@ -426,6 +446,39 @@ fn tick_animations(daemon: &mut DaemonState) {
     }
 }
 
+/// Tick rotation: advance to next wallpaper when the timer elapses.
+fn tick_rotation(daemon: &mut DaemonState) {
+    let (path, resize, transition) = {
+        let rot = match daemon.rotation.as_mut() {
+            Some(r) => r,
+            None => return,
+        };
+
+        let path = match rot.next_image() {
+            Some(p) => p,
+            None => {
+                warn!("rotation: no images available");
+                rot.reset_timer();
+                return;
+            }
+        };
+
+        let resize = rot.resize;
+        let transition = rot.transition;
+        rot.reset_timer();
+        rot.save();
+        (path, resize, transition)
+    };
+
+    let path_str = path.to_string_lossy().to_string();
+    let result = handle_img(daemon, &path_str, None, resize, &transition);
+    if let IpcResponse::Error { ref message } = result {
+        warn!("rotation: failed to set wallpaper: {message}");
+    } else {
+        info!(path = %path_str, "rotation: wallpaper changed");
+    }
+}
+
 fn handle_command(daemon: &mut DaemonState, cmd: IpcCommand) -> IpcResponse {
     match cmd {
         IpcCommand::Kill => {
@@ -487,6 +540,29 @@ fn handle_command(daemon: &mut DaemonState, cmd: IpcCommand) -> IpcResponse {
                 message: format!("clear-cache failed: {e}"),
             },
         },
+        IpcCommand::RotateStart {
+            directories,
+            interval_secs,
+            resize,
+            transition,
+            upscale_mode,
+            upscale_cmd,
+            upscale_scale,
+        } => handle_rotate_start(
+            daemon,
+            rotation::RotateStartParams {
+                directories,
+                interval_secs,
+                resize,
+                transition,
+                upscale_mode,
+                upscale_cmd,
+                upscale_scale,
+            },
+        ),
+        IpcCommand::RotateStop => handle_rotate_stop(daemon),
+        IpcCommand::RotateNext => handle_rotate_next(daemon),
+        IpcCommand::RotateStatus => handle_rotate_status(daemon),
     }
 }
 
@@ -497,6 +573,12 @@ fn handle_img(
     resize: ResizeMode,
     transition_params: &TransitionParams,
 ) -> IpcResponse {
+    // FR-011: Reset rotation timer when a manual wallpaper is set
+    if let Some(ref mut rot) = daemon.rotation {
+        rot.reset_timer();
+        rot.save();
+    }
+
     let img_path = Path::new(path);
 
     // Detect GIF for animation
@@ -602,18 +684,14 @@ fn handle_img(
         };
 
         for name in &names {
-            let atlas_tex = match texture::upload_gif_atlas(
-                &daemon.vk,
-                &resized_frames,
-                frame_w,
-                frame_h,
-            ) {
-                Ok(tex) => tex,
-                Err(e) => {
-                    warn!(output = %name, "failed to upload GIF atlas: {e}");
-                    continue;
-                }
-            };
+            let atlas_tex =
+                match texture::upload_gif_atlas(&daemon.vk, &resized_frames, frame_w, frame_h) {
+                    Ok(tex) => tex,
+                    Err(e) => {
+                        warn!(output = %name, "failed to upload GIF atlas: {e}");
+                        continue;
+                    }
+                };
 
             let pipeline = daemon.pipeline.as_ref().unwrap();
 
@@ -709,10 +787,13 @@ fn handle_img(
         let resized = if let Some(output) = first_output {
             let (eff_w, eff_h) = output.effective_resolution();
             info!(
-                img_w = original_w, img_h = original_h,
-                eff_w = eff_w, eff_h = eff_h,
+                img_w = original_w,
+                img_h = original_h,
+                eff_w = eff_w,
+                eff_h = eff_h,
                 scale = output.scale_factor,
-                logical_w = output.width, logical_h = output.height,
+                logical_w = output.width,
+                logical_h = output.height,
                 "pre-resize: image vs effective resolution"
             );
             wl_common::image_decode::resize_for_output(decoded, eff_w, eff_h, resize)
@@ -1003,6 +1084,129 @@ fn handle_restore(daemon: &mut DaemonState) -> IpcResponse {
     }
 
     IpcResponse::Ok
+}
+
+fn handle_rotate_start(
+    daemon: &mut DaemonState,
+    params: rotation::RotateStartParams,
+) -> IpcResponse {
+    let rotation::RotateStartParams {
+        directories,
+        interval_secs,
+        resize,
+        transition,
+        upscale_mode,
+        upscale_cmd,
+        upscale_scale,
+    } = params;
+
+    if interval_secs == 0 {
+        return IpcResponse::Error {
+            message: "interval must be greater than 0".to_string(),
+        };
+    }
+
+    let candidates = rotation::RotationState::new_cycle(&directories);
+    if candidates.is_empty() {
+        return IpcResponse::Error {
+            message: "no image files found in specified directories".to_string(),
+        };
+    }
+
+    let interval = std::time::Duration::from_secs(interval_secs);
+    let mut rot = rotation::RotationState {
+        directories,
+        interval,
+        candidates,
+        current_index: 0,
+        next_rotation: std::time::Instant::now() + interval,
+        resize,
+        transition,
+        upscale_mode,
+        upscale_cmd,
+        upscale_scale,
+    };
+
+    // Show first image immediately
+    if let Some(path) = rot.next_image() {
+        let path_str = path.to_string_lossy().to_string();
+        let result = handle_img(daemon, &path_str, None, rot.resize, &rot.transition);
+        if let IpcResponse::Error { ref message } = result {
+            warn!("rotation: failed to set first wallpaper: {message}");
+        }
+    }
+
+    rot.save();
+    info!(
+        interval_secs = interval_secs,
+        images = rot.candidates.len(),
+        "rotation started"
+    );
+    daemon.rotation = Some(rot);
+
+    IpcResponse::Ok
+}
+
+fn handle_rotate_stop(daemon: &mut DaemonState) -> IpcResponse {
+    daemon.rotation = None;
+    wl_common::cache::delete_rotation_state();
+    info!("rotation stopped");
+    IpcResponse::Ok
+}
+
+fn handle_rotate_next(daemon: &mut DaemonState) -> IpcResponse {
+    let rot = match daemon.rotation.as_mut() {
+        Some(r) => r,
+        None => {
+            return IpcResponse::Error {
+                message: "rotation is not active".to_string(),
+            };
+        }
+    };
+
+    let resize = rot.resize;
+    let transition = rot.transition;
+
+    if let Some(path) = rot.next_image() {
+        rot.reset_timer();
+        rot.save();
+        let path_str = path.to_string_lossy().to_string();
+        handle_img(daemon, &path_str, None, resize, &transition);
+    } else {
+        warn!("rotation: no images available after reshuffle");
+    }
+
+    IpcResponse::Ok
+}
+
+fn handle_rotate_status(daemon: &DaemonState) -> IpcResponse {
+    match &daemon.rotation {
+        Some(rot) => {
+            let remaining = rot.candidates.len().saturating_sub(rot.current_index);
+            let next_secs = rot.time_until_next().as_secs();
+            IpcResponse::RotationStatus {
+                active: true,
+                interval_secs: Some(rot.interval.as_secs()),
+                directories: Some(
+                    rot.directories
+                        .iter()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect(),
+                ),
+                next_change_secs: Some(next_secs),
+                images_total: Some(rot.candidates.len()),
+                images_remaining: Some(remaining),
+            }
+        }
+        None => IpcResponse::RotationStatus {
+            active: false,
+            interval_secs: None,
+            directories: None,
+            next_change_secs: None,
+            images_total: None,
+            images_remaining: None,
+        },
+    }
 }
 
 fn get_target_outputs(daemon: &DaemonState, targets: &Option<Vec<String>>) -> Vec<String> {
