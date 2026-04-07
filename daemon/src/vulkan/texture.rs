@@ -46,10 +46,13 @@ pub fn upload_rgba8_texture(
             available = available.max(heap.size);
         }
     }
-    if available > 0 && total_needed > available / 2 {
+    // Reject textures that would consume more than 25% of GPU memory to leave
+    // headroom for swapchain images, transitions, and driver overhead.
+    let vram_limit = available / 4;
+    if available > 0 && total_needed > vram_limit {
         return Err(VulkanError::TextureUpload(format!(
-            "image requires {total_needed} bytes but only ~{} bytes GPU memory available",
-            available / 2,
+            "image requires {total_needed} bytes but VRAM budget is ~{vram_limit} bytes \
+             (25% of {available} total)",
         )));
     }
 
@@ -363,17 +366,60 @@ pub fn upload_rgba8_texture(
     })
 }
 
+/// Maximum GIF atlas size in bytes (128 MiB).
+const MAX_GIF_ATLAS_BYTES: u64 = 128 * 1024 * 1024;
+
 /// Upload multiple GIF frames as a horizontal atlas texture.
 ///
 /// Frames are packed left-to-right in a single row. The atlas width = frame_width * frame_count.
 /// Each frame must be `frame_width * frame_height * 4` bytes of RGBA8 data.
+///
+/// If the atlas would exceed `MAX_GIF_ATLAS_BYTES` or the GPU's maximum texture dimension,
+/// frames are evenly sampled down to fit within the limits.
 pub fn upload_gif_atlas(
     vk: &VulkanContext,
     frames: &[Vec<u8>],
     frame_width: u32,
     frame_height: u32,
-) -> Result<GpuTexture, VulkanError> {
-    let frame_count = frames.len() as u32;
+) -> Result<(GpuTexture, Vec<usize>), VulkanError> {
+    let max_dim = vk.physical_device_properties.limits.max_image_dimension2_d;
+    let frame_bytes = (frame_width as u64) * (frame_height as u64) * 4;
+
+    // Calculate maximum number of frames that fit within limits
+    let max_by_dim = if frame_width > 0 {
+        (max_dim / frame_width) as usize
+    } else {
+        frames.len()
+    };
+    let max_by_mem = if frame_bytes > 0 {
+        (MAX_GIF_ATLAS_BYTES / frame_bytes) as usize
+    } else {
+        frames.len()
+    };
+    let max_frames = max_by_dim.min(max_by_mem).max(1);
+
+    // Sample frames evenly if we need to drop some
+    let (selected_frames, selected_indices): (Vec<&Vec<u8>>, Vec<usize>) =
+        if frames.len() > max_frames {
+            tracing::info!(
+                total_frames = frames.len(),
+                max_frames,
+                max_by_dim,
+                max_by_mem,
+                "GIF atlas: sampling frames to fit VRAM/dimension limits"
+            );
+            let step = frames.len() as f64 / max_frames as f64;
+            (0..max_frames)
+                .map(|i| {
+                    let idx = (i as f64 * step).floor() as usize;
+                    (&frames[idx], idx)
+                })
+                .unzip()
+        } else {
+            frames.iter().enumerate().map(|(i, f)| (f, i)).unzip()
+        };
+
+    let frame_count = selected_frames.len() as u32;
     let atlas_width = frame_width * frame_count;
     let atlas_height = frame_height;
 
@@ -382,7 +428,7 @@ pub fn upload_gif_atlas(
     let atlas_row_bytes = (atlas_width * 4) as usize;
     let mut atlas_data = vec![0u8; (atlas_width as usize) * (atlas_height as usize) * 4];
 
-    for (frame_idx, frame_data) in frames.iter().enumerate() {
+    for (frame_idx, frame_data) in selected_frames.iter().enumerate() {
         let x_offset = frame_idx * row_bytes;
         for y in 0..frame_height as usize {
             let src_start = y * row_bytes;
@@ -396,7 +442,8 @@ pub fn upload_gif_atlas(
         }
     }
 
-    upload_rgba8_texture(vk, &atlas_data, atlas_width, atlas_height)
+    let texture = upload_rgba8_texture(vk, &atlas_data, atlas_width, atlas_height)?;
+    Ok((texture, selected_indices))
 }
 
 /// Create a texture sampler with linear filtering and clamp-to-edge addressing.

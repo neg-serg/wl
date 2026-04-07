@@ -684,14 +684,32 @@ fn handle_img(
         };
 
         for name in &names {
-            let atlas_tex =
+            let (atlas_tex, selected_indices) =
                 match texture::upload_gif_atlas(&daemon.vk, &resized_frames, frame_w, frame_h) {
-                    Ok(tex) => tex,
+                    Ok(result) => result,
                     Err(e) => {
                         warn!(output = %name, "failed to upload GIF atlas: {e}");
                         continue;
                     }
                 };
+
+            // Build durations for the selected frames, distributing dropped
+            // frame time into the preceding kept frame.
+            let effective_durations: Vec<u32> = if selected_indices.len() < durations.len() {
+                let mut eff = Vec::with_capacity(selected_indices.len());
+                for (i, &idx) in selected_indices.iter().enumerate() {
+                    let next_idx = if i + 1 < selected_indices.len() {
+                        selected_indices[i + 1]
+                    } else {
+                        durations.len()
+                    };
+                    let total: u32 = durations[idx..next_idx].iter().sum();
+                    eff.push(total);
+                }
+                eff
+            } else {
+                durations.clone()
+            };
 
             let pipeline = daemon.pipeline.as_ref().unwrap();
 
@@ -718,8 +736,8 @@ fn handle_img(
                 output.descriptor_set = Some(ds);
 
                 let anim_state = animation::create_animation(
-                    gif_frames.frames.len() as u32,
-                    durations.clone(),
+                    selected_indices.len() as u32,
+                    effective_durations,
                     atlas_tex,
                     frame_w,
                     frame_h,
