@@ -56,6 +56,28 @@ impl VulkanContext {
 
         let command_pool = Self::create_command_pool(&device, graphics_queue_family)?;
 
+        // Log GPU info and VRAM for diagnostics
+        {
+            let name = unsafe {
+                CStr::from_ptr(physical_device_properties.device_name.as_ptr())
+            };
+            let mut device_local_mb = 0u64;
+            for i in 0..physical_device_memory_properties.memory_type_count {
+                let heap_idx =
+                    physical_device_memory_properties.memory_types[i as usize].heap_index;
+                let heap = physical_device_memory_properties.memory_heaps[heap_idx as usize];
+                if heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL) {
+                    device_local_mb = device_local_mb.max(heap.size / (1024 * 1024));
+                }
+            }
+            tracing::info!(
+                gpu = %name.to_string_lossy(),
+                vram_mb = device_local_mb,
+                max_texture_dim = physical_device_properties.limits.max_image_dimension2_d,
+                "Vulkan device selected"
+            );
+        }
+
         Ok(Self {
             entry,
             instance,
