@@ -369,12 +369,9 @@ impl Swapchain {
     }
 
     fn choose_image_count(capabilities: &vk::SurfaceCapabilitiesKHR) -> u32 {
-        let desired = capabilities.min_image_count + 1;
-        if capabilities.max_image_count > 0 {
-            desired.min(capabilities.max_image_count)
-        } else {
-            desired
-        }
+        // Use the minimum image count to reduce VRAM consumption.
+        // FIFO present mode guarantees correct vsync with min_image_count.
+        capabilities.min_image_count
     }
 
     fn create_image_views(
