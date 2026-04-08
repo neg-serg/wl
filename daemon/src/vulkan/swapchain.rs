@@ -67,6 +67,16 @@ impl Swapchain {
             cap_max_h = capabilities.max_image_extent.height,
             "swapchain extent chosen"
         );
+        if extent.width != width || extent.height != height {
+            tracing::warn!(
+                requested_w = width,
+                requested_h = height,
+                actual_w = extent.width,
+                actual_h = extent.height,
+                "swapchain extent differs from requested — \
+                 compositor forced a different resolution (possible low-res rendering)"
+            );
+        }
         let image_count = Self::choose_image_count(&capabilities);
 
         let create_info = vk::SwapchainCreateInfoKHR::default()
@@ -117,7 +127,6 @@ impl Swapchain {
     ///
     /// Destroys old image views, creates a new swapchain (passing the old handle),
     /// destroys the old swapchain, and creates new image views.
-    #[allow(dead_code)]
     pub fn recreate(
         &mut self,
         device: &ash::Device,
@@ -139,6 +148,23 @@ impl Swapchain {
         let format = Self::choose_format(&self.surface_fn, physical_device, self.surface)?;
         let extent = Self::choose_extent(&capabilities, width, height);
         let image_count = Self::choose_image_count(&capabilities);
+
+        tracing::info!(
+            requested_w = width,
+            requested_h = height,
+            extent_w = extent.width,
+            extent_h = extent.height,
+            "swapchain recreate extent"
+        );
+        if extent.width != width || extent.height != height {
+            tracing::warn!(
+                requested_w = width,
+                requested_h = height,
+                actual_w = extent.width,
+                actual_h = extent.height,
+                "swapchain recreate: extent differs from requested"
+            );
+        }
 
         let old_swapchain = self.handle;
 

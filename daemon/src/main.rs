@@ -128,10 +128,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let pipeline = if let Some(format) = swapchain_format {
         let vert = shaders
             .get("wallpaper.vert")
-            .expect("wallpaper.vert missing");
+            .ok_or("wallpaper.vert shader missing")?;
         let frag = shaders
             .get("wallpaper.frag")
-            .expect("wallpaper.frag missing");
+            .ok_or("wallpaper.frag shader missing")?;
         let p = WallpaperPipeline::new(&vk.device, format, vert, frag)
             .map_err(|e| format!("pipeline: {e}"))?;
 
@@ -163,7 +163,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let transition_pipeline = if let Some(format) = swapchain_format {
         let vert = shaders
             .get("wallpaper.vert")
-            .expect("wallpaper.vert missing");
+            .ok_or("wallpaper.vert shader missing")?;
         let frag_modules: Vec<(TransitionKind, _)> = [
             (TransitionKind::Wipe, "transition_wipe.frag"),
             (TransitionKind::Wave, "transition_wave.frag"),
@@ -325,9 +325,42 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
+        // Clean up outputs that were removed by Wayland (monitor hotplug).
+        let wl_names = wl.output_names();
+        let stale: Vec<String> = daemon
+            .outputs
+            .keys()
+            .filter(|k| !wl_names.contains(k))
+            .cloned()
+            .collect();
+        for name in stale {
+            info!(output = %name, "removing stale output (monitor unplugged)");
+            if let Some(mut output) = daemon.outputs.remove(&name) {
+                // SAFETY: GPU idle ensured before destroying resources.
+                unsafe {
+                    let _ = daemon.vk.device.device_wait_idle();
+                    output.destroy(&daemon.vk.device);
+                }
+            }
+        }
+
         // Tick active transitions and animations
         tick_transitions(&mut daemon);
         tick_animations(&mut daemon);
+
+        // Recreate swapchains that were flagged as out-of-date.
+        let recreate_names: Vec<String> = daemon
+            .outputs
+            .iter()
+            .filter(|(_, o)| o.needs_recreate && o.swapchain.is_some())
+            .map(|(n, _)| n.clone())
+            .collect();
+        for name in recreate_names {
+            // SAFETY: GPU idle ensured inside recreate_swapchain.
+            unsafe {
+                recreate_swapchain(&mut daemon, &name);
+            }
+        }
 
         let mut device_lost = false;
         for output in daemon.outputs.values_mut() {
@@ -341,15 +374,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         daemon.transition_pipeline.as_ref(),
                     )
                 } {
-                    if matches!(
-                        e,
-                        render::RenderError::Vulkan(ash::vk::Result::ERROR_DEVICE_LOST)
-                    ) {
-                        error!("Vulkan device lost, shutting down");
-                        device_lost = true;
-                        break;
+                    match e {
+                        render::RenderError::Vulkan(ash::vk::Result::ERROR_DEVICE_LOST) => {
+                            error!("Vulkan device lost, shutting down");
+                            device_lost = true;
+                            break;
+                        }
+                        render::RenderError::NeedsRecreate => {
+                            output.needs_recreate = true;
+                            output.needs_redraw = true;
+                        }
+                        _ => {
+                            warn!(output = %output.name, "render error: {e}");
+                        }
                     }
-                    warn!(output = %output.name, "render error: {e}");
                 }
             }
         }
@@ -368,6 +406,99 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Recreate the swapchain and framebuffers for an output after resize or
+/// ERROR_OUT_OF_DATE_KHR.
+///
+/// # Safety
+/// All Vulkan handles must be valid. The GPU must be idle for this output.
+unsafe fn recreate_swapchain(daemon: &mut DaemonState, output_name: &str) {
+    let output = match daemon.outputs.get_mut(output_name) {
+        Some(o) => o,
+        None => return,
+    };
+
+    if output.swapchain.is_none() {
+        return;
+    }
+
+    // Wait for any in-flight work to finish.
+    unsafe {
+        let _ = daemon.vk.device.device_wait_idle();
+    }
+
+    // Free the previous frame's command buffer if any.
+    if let Some(old_cmd) = output.last_command_buffer.take() {
+        unsafe {
+            daemon
+                .vk
+                .device
+                .free_command_buffers(daemon.vk.command_pool, &[old_cmd]);
+        }
+    }
+
+    // Destroy old framebuffers.
+    for fb in output.framebuffers.drain(..) {
+        unsafe {
+            daemon.vk.device.destroy_framebuffer(fb, None);
+        }
+    }
+
+    // Compute effective resolution before borrowing swapchain mutably.
+    let (eff_w, eff_h) = output.effective_resolution();
+
+    let swapchain = output.swapchain.as_mut().unwrap();
+    if let Err(e) = swapchain.recreate(
+        &daemon.vk.device,
+        daemon.vk.physical_device,
+        eff_w.max(1),
+        eff_h.max(1),
+    ) {
+        warn!(output = %output_name, "swapchain recreation failed: {e}");
+        output.needs_recreate = false;
+        return;
+    }
+
+    info!(
+        output = %output_name,
+        extent_w = swapchain.extent.width,
+        extent_h = swapchain.extent.height,
+        "swapchain recreated"
+    );
+
+    // Rebuild framebuffers.
+    let render_pass = daemon
+        .pipeline
+        .as_ref()
+        .map(|p| p.render_pass)
+        .or_else(|| daemon.transition_pipeline.as_ref().map(|tp| tp.render_pass));
+
+    // Re-borrow output since swapchain borrow ended.
+    let output = daemon.outputs.get_mut(output_name).unwrap();
+    let swapchain = output.swapchain.as_ref().unwrap();
+
+    if let Some(render_pass) = render_pass {
+        for &view in &swapchain.image_views {
+            match WallpaperPipeline::create_framebuffer(
+                &daemon.vk.device,
+                render_pass,
+                view,
+                swapchain.extent.width,
+                swapchain.extent.height,
+            ) {
+                Ok(fb) => output.framebuffers.push(fb),
+                Err(e) => {
+                    warn!(output = %output_name, "framebuffer creation failed: {e}");
+                    output.needs_recreate = false;
+                    return;
+                }
+            }
+        }
+    }
+
+    output.needs_recreate = false;
+    output.needs_redraw = true;
+}
+
 /// Tick all active transitions, completing them when done.
 fn tick_transitions(daemon: &mut DaemonState) {
     let names: Vec<String> = daemon
@@ -378,7 +509,9 @@ fn tick_transitions(daemon: &mut DaemonState) {
         .collect();
 
     for name in names {
-        let output = daemon.outputs.get_mut(&name).unwrap();
+        let Some(output) = daemon.outputs.get_mut(&name) else {
+            continue;
+        };
         let completed = if let Some(ref mut t) = output.transition {
             let done = transition::tick(t);
             output.needs_redraw = true;

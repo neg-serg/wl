@@ -31,6 +31,8 @@ pub struct Output {
     pub render_finished_semaphore: vk::Semaphore,
     pub in_flight_fence: vk::Fence,
     pub needs_redraw: bool,
+    /// Set when the swapchain is out-of-date or suboptimal and must be recreated.
+    pub needs_recreate: bool,
 
     // Previous frame's command buffer, freed after fence wait
     pub last_command_buffer: Option<vk::CommandBuffer>,
@@ -143,6 +145,7 @@ impl Output {
             render_finished_semaphore,
             in_flight_fence,
             needs_redraw: true,
+            needs_recreate: false,
             last_command_buffer: None,
         })
     }

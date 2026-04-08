@@ -40,14 +40,14 @@ pub unsafe fn render_frame(
         match swapchain.acquire_next_image(output.image_available_semaphore, u64::MAX) {
             Ok(result) => result,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                output.needs_redraw = true;
-                return Ok(());
+                return Err(RenderError::NeedsRecreate);
             }
             Err(e) => return Err(RenderError::Vulkan(e)),
         };
 
     if suboptimal {
-        output.needs_redraw = true;
+        // Continue rendering this frame but signal recreation afterwards.
+        output.needs_recreate = true;
     }
 
     // Allocate command buffer
@@ -74,40 +74,29 @@ pub unsafe fn render_frame(
         }
     }
 
-    let swapchain = output.swapchain.as_ref().unwrap();
+    // Re-borrow swapchain (first borrow was consumed by acquire_next_image match).
+    let swapchain = output.swapchain.as_ref().ok_or(RenderError::NoSwapchain)?;
     let extent = swapchain.extent;
+    let fb_index = image_index as usize;
 
-    // Check if we should render a transition
-    let image_in_bounds = (image_index as usize) < output.framebuffers.len();
+    let resize_to_u32 = |m: wl_common::ipc_types::ResizeMode| -> u32 {
+        match m {
+            wl_common::ipc_types::ResizeMode::Crop
+            | wl_common::ipc_types::ResizeMode::Center => 0,
+            wl_common::ipc_types::ResizeMode::Fit => 1,
+            wl_common::ipc_types::ResizeMode::No => 2,
+        }
+    };
 
-    let has_transition = output.transition.is_some()
-        && output.transition.as_ref().unwrap().descriptor_set.is_some()
-        && transition_pipeline.is_some()
-        && image_in_bounds;
-
-    let has_wallpaper = output.wallpaper.is_some()
-        && output.descriptor_set.is_some()
-        && pipeline.is_some()
-        && image_in_bounds;
-
-    if has_transition {
-        let tp = transition_pipeline.unwrap();
-        let transition = output.transition.as_ref().unwrap();
-        let kind = transition.kind;
-
-        if let Some(vk_pipeline) = tp.get(kind) {
-            let descriptor_set = transition.descriptor_set.unwrap();
-            let framebuffer = output.framebuffers[image_index as usize];
-
-            let resize_to_u32 = |m: wl_common::ipc_types::ResizeMode| -> u32 {
-                match m {
-                    wl_common::ipc_types::ResizeMode::Crop
-                    | wl_common::ipc_types::ResizeMode::Center => 0,
-                    wl_common::ipc_types::ResizeMode::Fit => 1,
-                    wl_common::ipc_types::ResizeMode::No => 2,
-                }
-            };
-
+    // Try transition → wallpaper → solid color fallback.
+    if let (Some(transition), Some(tp), Some(&framebuffer)) = (
+        output.transition.as_ref(),
+        transition_pipeline,
+        output.framebuffers.get(fb_index),
+    ) {
+        if let (Some(descriptor_set), Some(vk_pipeline)) =
+            (transition.descriptor_set, tp.get(transition.kind))
+        {
             let push_constants = TransitionPushConstants {
                 progress: transition.progress,
                 angle: transition.angle,
@@ -144,19 +133,13 @@ pub unsafe fn render_frame(
                 );
             }
         }
-    } else if has_wallpaper {
-        let pipeline = pipeline.unwrap();
-        let descriptor_set = output.descriptor_set.unwrap();
-        let framebuffer = output.framebuffers[image_index as usize];
-        let wallpaper = output.wallpaper.as_ref().unwrap();
-
-        let resize_mode = match wallpaper.resize_mode {
-            wl_common::ipc_types::ResizeMode::Crop | wl_common::ipc_types::ResizeMode::Center => {
-                0u32
-            }
-            wl_common::ipc_types::ResizeMode::Fit => 1u32,
-            wl_common::ipc_types::ResizeMode::No => 2u32,
-        };
+    } else if let (Some(wallpaper), Some(pipeline), Some(descriptor_set), Some(&framebuffer)) = (
+        output.wallpaper.as_ref(),
+        pipeline,
+        output.descriptor_set,
+        output.framebuffers.get(fb_index),
+    ) {
+        let resize_mode = resize_to_u32(wallpaper.resize_mode);
 
         // Compute animation UV offset if animating
         let (uv_offset, uv_scale) = if let Some(ref anim) = output.animation {
@@ -199,9 +182,8 @@ pub unsafe fn render_frame(
                 },
             );
         }
-    } else {
+    } else if let Some(image) = swapchain.images.get(image_index as usize).copied() {
         // No wallpaper: clear to solid color
-        let image = swapchain.images[image_index as usize];
         // SAFETY: cmd and image are valid.
         unsafe {
             record_clear_image(&vk.device, cmd, image, output.clear_color);
@@ -248,25 +230,25 @@ pub unsafe fn render_frame(
     }
 
     // Present
-    let swapchain = output.swapchain.as_ref().unwrap();
+    let swapchain = output.swapchain.as_ref().ok_or(RenderError::NoSwapchain)?;
     match swapchain.present(
         vk.graphics_queue,
         output.render_finished_semaphore,
         image_index,
     ) {
         Ok(suboptimal) if suboptimal => {
-            output.needs_redraw = true;
+            output.needs_recreate = true;
         }
         Ok(_) => {}
         Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
-            output.needs_redraw = true;
+            output.needs_recreate = true;
         }
         Err(e) => return Err(RenderError::Vulkan(e)),
     }
 
     // Store the command buffer so it can be freed after the fence signals next frame.
     output.last_command_buffer = Some(cmd);
-    output.needs_redraw = false;
+    output.needs_redraw = output.needs_recreate;
     Ok(())
 }
 
@@ -430,6 +412,8 @@ unsafe fn record_clear_image(
 #[derive(Debug)]
 pub enum RenderError {
     NoSwapchain,
+    /// The swapchain is out-of-date or suboptimal and must be recreated.
+    NeedsRecreate,
     Vulkan(vk::Result),
 }
 
@@ -437,6 +421,7 @@ impl std::fmt::Display for RenderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoSwapchain => write!(f, "no swapchain for output"),
+            Self::NeedsRecreate => write!(f, "swapchain needs recreation"),
             Self::Vulkan(e) => write!(f, "Vulkan error: {e}"),
         }
     }
