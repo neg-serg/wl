@@ -74,6 +74,8 @@ impl From<wayland_client::backend::WaylandError> for WaylandError {
 
 pub struct OutputData {
     pub wl_output: wl_output::WlOutput,
+    /// The wl_registry global name (ID) for this output, used for GlobalRemove tracking.
+    pub global_name: u32,
     pub name: Option<String>,
     pub width: u32,
     pub height: u32,
@@ -89,9 +91,10 @@ pub struct OutputData {
 }
 
 impl OutputData {
-    fn new(wl_output: wl_output::WlOutput) -> Self {
+    fn new(wl_output: wl_output::WlOutput, global_name: u32) -> Self {
         Self {
             wl_output,
+            global_name,
             name: None,
             width: 0,
             height: 0,
@@ -382,6 +385,21 @@ impl WaylandState {
     pub fn outputs(&self) -> &[OutputData] {
         &self.data.outputs
     }
+
+    /// Return the set of output names currently known to Wayland.
+    /// Used by the main loop to detect removed outputs.
+    pub fn output_names(&self) -> Vec<String> {
+        self.data
+            .outputs
+            .iter()
+            .enumerate()
+            .map(|(i, o)| {
+                o.name
+                    .clone()
+                    .unwrap_or_else(|| format!("output-{i}"))
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -448,20 +466,33 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandData {
                     let output =
                         registry.bind::<wl_output::WlOutput, _, _>(name, version.min(4), qh, ());
                     tracing::debug!(name, version, "discovered wl_output");
-                    state.outputs.push(OutputData::new(output));
+                    state.outputs.push(OutputData::new(output, name));
                 }
                 _ => {}
             },
-            wl_registry::Event::GlobalRemove { name: _ } => {
-                // Output removal is handled opportunistically: callers should
-                // poll `outputs()` after each roundtrip. A more sophisticated
-                // implementation would match on the global name stored during
-                // bind, but for now we rely on wl_output::Event::Release or
-                // destroy callbacks if available.
-                //
-                // For wl_output specifically, the compositor sends
-                // `wl_output::Event::Name` / mode events, and on removal the
-                // proxy becomes inert. We leave cleanup to the caller.
+            wl_registry::Event::GlobalRemove { name } => {
+                if let Some(idx) = state.outputs.iter().position(|o| o.global_name == name) {
+                    let removed = state.outputs.remove(idx);
+                    tracing::info!(
+                        global_name = name,
+                        output_name = ?removed.name,
+                        "output removed (GlobalRemove)"
+                    );
+                    // Destroy Wayland protocol objects owned by this output.
+                    if let Some(ls) = removed.layer_surface {
+                        ls.destroy();
+                    }
+                    if let Some(fs) = removed.fractional_scale {
+                        fs.destroy();
+                    }
+                    if let Some(vp) = removed.viewport {
+                        vp.destroy();
+                    }
+                    if let Some(s) = removed.surface {
+                        s.destroy();
+                    }
+                    removed.wl_output.release();
+                }
             }
             _ => {}
         }
