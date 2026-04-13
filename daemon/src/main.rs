@@ -850,9 +850,9 @@ fn handle_img(
         };
 
         for name in &names {
-            let atlas_tex =
+            let (atlas_tex, _frame_offsets) =
                 match texture::upload_gif_atlas(&daemon.vk, &resized_frames, frame_w, frame_h) {
-                    Ok(tex) => tex,
+                    Ok(result) => result,
                     Err(e) => {
                         warn!(output = %name, "failed to upload GIF atlas: {e}");
                         continue;
