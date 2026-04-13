@@ -128,10 +128,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let pipeline = if let Some(format) = swapchain_format {
         let vert = shaders
             .get("wallpaper.vert")
-            .ok_or("wallpaper.vert shader missing")?;
+            .expect("wallpaper.vert missing");
         let frag = shaders
             .get("wallpaper.frag")
-            .ok_or("wallpaper.frag shader missing")?;
+            .expect("wallpaper.frag missing");
         let p = WallpaperPipeline::new(&vk.device, format, vert, frag)
             .map_err(|e| format!("pipeline: {e}"))?;
 
@@ -163,7 +163,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let transition_pipeline = if let Some(format) = swapchain_format {
         let vert = shaders
             .get("wallpaper.vert")
-            .ok_or("wallpaper.vert shader missing")?;
+            .expect("wallpaper.vert missing");
         let frag_modules: Vec<(TransitionKind, _)> = [
             (TransitionKind::Wipe, "transition_wipe.frag"),
             (TransitionKind::Wave, "transition_wave.frag"),
@@ -325,42 +325,155 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
-        // Clean up outputs that were removed by Wayland (monitor hotplug).
-        let wl_names = wl.output_names();
-        let stale: Vec<String> = daemon
-            .outputs
-            .keys()
-            .filter(|k| !wl_names.contains(k))
-            .cloned()
-            .collect();
-        for name in stale {
-            info!(output = %name, "removing stale output (monitor unplugged)");
-            if let Some(mut output) = daemon.outputs.remove(&name) {
-                // SAFETY: GPU idle ensured before destroying resources.
-                unsafe {
-                    let _ = daemon.vk.device.device_wait_idle();
-                    output.destroy(&daemon.vk.device);
+        // Recover outputs whose layer surface was closed by the compositor.
+        // This destroys stale Vulkan resources, recreates the Wayland surface,
+        // and rebuilds the swapchain + framebuffers so rendering can resume.
+        let lost = wl.lost_surface_indices();
+        if !lost.is_empty() {
+            // SAFETY: GPU must be idle before destroying swapchain resources.
+            unsafe { let _ = daemon.vk.device.device_wait_idle(); }
+
+            for idx in &lost {
+                let output_name = wl.outputs()[*idx]
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("output-{idx}"));
+
+                if let Some(output) = daemon.outputs.get_mut(&output_name) {
+                    warn!(output = %output_name, "recovering lost surface");
+
+                    // 1. Tear down stale Vulkan resources for this output.
+                    // SAFETY: GPU is idle (waited above).
+                    unsafe {
+                        // Free command buffer if pending
+                        if let Some(old_cmd) = output.last_command_buffer.take() {
+                            daemon.vk.device.free_command_buffers(daemon.vk.command_pool, &[old_cmd]);
+                        }
+                        // Destroy framebuffers
+                        for fb in output.framebuffers.drain(..) {
+                            daemon.vk.device.destroy_framebuffer(fb, None);
+                        }
+                        // Destroy swapchain (includes VkSurfaceKHR)
+                        if let Some(mut sc) = output.swapchain.take() {
+                            sc.destroy(&daemon.vk.device);
+                        }
+                    }
                 }
+
+                // 2. Recreate the Wayland layer surface.
+                if let Err(e) = wl.create_layer_surface(*idx) {
+                    error!(output_index = idx, "failed to recreate layer surface: {e}");
+                    continue;
+                }
+            }
+
+            // Wait for compositor to send Configure events for new surfaces.
+            if let Err(e) = wl.roundtrip() {
+                error!("roundtrip after surface recreation failed: {e}");
+            }
+
+            // 3. Rebuild Vulkan surface + swapchain + framebuffers.
+            let display_ptr = wl.get_display_ptr();
+            for idx in &lost {
+                let wl_output = &wl.outputs()[*idx];
+                let output_name = wl_output
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("output-{idx}"));
+
+                if !wl_output.configured {
+                    warn!(output = %output_name, "surface not configured after recreation, skipping");
+                    continue;
+                }
+
+                let Some(surface_ptr) = wl.get_surface_ptr(*idx) else {
+                    warn!(output = %output_name, "no surface pointer after recreation");
+                    continue;
+                };
+
+                let output = match daemon.outputs.get_mut(&output_name) {
+                    Some(o) => o,
+                    None => continue,
+                };
+
+                // Update output dimensions from refreshed Wayland state.
+                output.width = wl_output.width;
+                output.height = wl_output.height;
+                output.scale_factor = wl_output.scale_factor;
+
+                // SAFETY: display_ptr and surface_ptr are valid Wayland pointers.
+                let vk_surface = match unsafe {
+                    Swapchain::create_surface(
+                        &daemon.vk.entry,
+                        &daemon.vk.instance,
+                        display_ptr,
+                        surface_ptr,
+                        &daemon.vk.wayland_surface_fn,
+                    )
+                } {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!(output = %output_name, "failed to create Vulkan surface: {e}");
+                        continue;
+                    }
+                };
+
+                let (eff_w, eff_h) = output.effective_resolution();
+                let swapchain = match Swapchain::new(
+                    &daemon.vk.instance,
+                    &daemon.vk.device,
+                    daemon.vk.physical_device,
+                    vk_surface,
+                    eff_w.max(1),
+                    eff_h.max(1),
+                ) {
+                    Ok(sc) => sc,
+                    Err(e) => {
+                        error!(output = %output_name, "failed to create swapchain: {e}");
+                        continue;
+                    }
+                };
+
+                // Rebuild framebuffers for the new swapchain.
+                if let Some(ref pipeline) = daemon.pipeline {
+                    for &view in &swapchain.image_views {
+                        match WallpaperPipeline::create_framebuffer(
+                            &daemon.vk.device,
+                            pipeline.render_pass,
+                            view,
+                            swapchain.extent.width,
+                            swapchain.extent.height,
+                        ) {
+                            Ok(fb) => output.framebuffers.push(fb),
+                            Err(e) => {
+                                error!(output = %output_name, "failed to create framebuffer: {e}");
+                            }
+                        }
+                    }
+                }
+
+                output.swapchain = Some(swapchain);
+                output.needs_redraw = true;
+
+                // Re-bind wallpaper descriptor set to ensure texture is displayed.
+                if let (Some(ds), Some(pipeline), Some(wp)) =
+                    (output.descriptor_set, &daemon.pipeline, &output.wallpaper)
+                {
+                    WallpaperPipeline::update_descriptor_set(
+                        &daemon.vk.device,
+                        ds,
+                        wp.texture.view,
+                        pipeline.sampler,
+                    );
+                }
+
+                info!(output = %output_name, "surface recovered successfully");
             }
         }
 
         // Tick active transitions and animations
         tick_transitions(&mut daemon);
         tick_animations(&mut daemon);
-
-        // Recreate swapchains that were flagged as out-of-date.
-        let recreate_names: Vec<String> = daemon
-            .outputs
-            .iter()
-            .filter(|(_, o)| o.needs_recreate && o.swapchain.is_some())
-            .map(|(n, _)| n.clone())
-            .collect();
-        for name in recreate_names {
-            // SAFETY: GPU idle ensured inside recreate_swapchain.
-            unsafe {
-                recreate_swapchain(&mut daemon, &name);
-            }
-        }
 
         let mut device_lost = false;
         for output in daemon.outputs.values_mut() {
@@ -374,20 +487,35 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         daemon.transition_pipeline.as_ref(),
                     )
                 } {
-                    match e {
-                        render::RenderError::Vulkan(ash::vk::Result::ERROR_DEVICE_LOST) => {
-                            error!("Vulkan device lost, shutting down");
-                            device_lost = true;
-                            break;
-                        }
-                        render::RenderError::NeedsRecreate => {
-                            output.needs_recreate = true;
-                            output.needs_redraw = true;
-                        }
-                        _ => {
-                            warn!(output = %output.name, "render error: {e}");
-                        }
+                    if matches!(
+                        e,
+                        render::RenderError::Vulkan(ash::vk::Result::ERROR_DEVICE_LOST)
+                    ) {
+                        error!("Vulkan device lost, shutting down");
+                        device_lost = true;
+                        break;
                     }
+                    if matches!(
+                        e,
+                        render::RenderError::Vulkan(ash::vk::Result::ERROR_SURFACE_LOST_KHR)
+                    ) {
+                        // Surface was invalidated under us. Drop the swapchain so
+                        // the Closed-event recovery path can rebuild it next tick.
+                        warn!(output = %output.name, "Vulkan surface lost, dropping swapchain");
+                        unsafe {
+                            if let Some(old_cmd) = output.last_command_buffer.take() {
+                                daemon.vk.device.free_command_buffers(daemon.vk.command_pool, &[old_cmd]);
+                            }
+                            for fb in output.framebuffers.drain(..) {
+                                daemon.vk.device.destroy_framebuffer(fb, None);
+                            }
+                            if let Some(mut sc) = output.swapchain.take() {
+                                sc.destroy(&daemon.vk.device);
+                            }
+                        }
+                        continue;
+                    }
+                    warn!(output = %output.name, "render error: {e}");
                 }
             }
         }
@@ -406,99 +534,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Recreate the swapchain and framebuffers for an output after resize or
-/// ERROR_OUT_OF_DATE_KHR.
-///
-/// # Safety
-/// All Vulkan handles must be valid. The GPU must be idle for this output.
-unsafe fn recreate_swapchain(daemon: &mut DaemonState, output_name: &str) {
-    let output = match daemon.outputs.get_mut(output_name) {
-        Some(o) => o,
-        None => return,
-    };
-
-    if output.swapchain.is_none() {
-        return;
-    }
-
-    // Wait for any in-flight work to finish.
-    unsafe {
-        let _ = daemon.vk.device.device_wait_idle();
-    }
-
-    // Free the previous frame's command buffer if any.
-    if let Some(old_cmd) = output.last_command_buffer.take() {
-        unsafe {
-            daemon
-                .vk
-                .device
-                .free_command_buffers(daemon.vk.command_pool, &[old_cmd]);
-        }
-    }
-
-    // Destroy old framebuffers.
-    for fb in output.framebuffers.drain(..) {
-        unsafe {
-            daemon.vk.device.destroy_framebuffer(fb, None);
-        }
-    }
-
-    // Compute effective resolution before borrowing swapchain mutably.
-    let (eff_w, eff_h) = output.effective_resolution();
-
-    let swapchain = output.swapchain.as_mut().unwrap();
-    if let Err(e) = swapchain.recreate(
-        &daemon.vk.device,
-        daemon.vk.physical_device,
-        eff_w.max(1),
-        eff_h.max(1),
-    ) {
-        warn!(output = %output_name, "swapchain recreation failed: {e}");
-        output.needs_recreate = false;
-        return;
-    }
-
-    info!(
-        output = %output_name,
-        extent_w = swapchain.extent.width,
-        extent_h = swapchain.extent.height,
-        "swapchain recreated"
-    );
-
-    // Rebuild framebuffers.
-    let render_pass = daemon
-        .pipeline
-        .as_ref()
-        .map(|p| p.render_pass)
-        .or_else(|| daemon.transition_pipeline.as_ref().map(|tp| tp.render_pass));
-
-    // Re-borrow output since swapchain borrow ended.
-    let output = daemon.outputs.get_mut(output_name).unwrap();
-    let swapchain = output.swapchain.as_ref().unwrap();
-
-    if let Some(render_pass) = render_pass {
-        for &view in &swapchain.image_views {
-            match WallpaperPipeline::create_framebuffer(
-                &daemon.vk.device,
-                render_pass,
-                view,
-                swapchain.extent.width,
-                swapchain.extent.height,
-            ) {
-                Ok(fb) => output.framebuffers.push(fb),
-                Err(e) => {
-                    warn!(output = %output_name, "framebuffer creation failed: {e}");
-                    output.needs_recreate = false;
-                    return;
-                }
-            }
-        }
-    }
-
-    output.needs_recreate = false;
-    output.needs_redraw = true;
-}
-
 /// Tick all active transitions, completing them when done.
 fn tick_transitions(daemon: &mut DaemonState) {
     let names: Vec<String> = daemon
@@ -509,9 +544,7 @@ fn tick_transitions(daemon: &mut DaemonState) {
         .collect();
 
     for name in names {
-        let Some(output) = daemon.outputs.get_mut(&name) else {
-            continue;
-        };
+        let output = daemon.outputs.get_mut(&name).unwrap();
         let completed = if let Some(ref mut t) = output.transition {
             let done = transition::tick(t);
             output.needs_redraw = true;
@@ -817,32 +850,14 @@ fn handle_img(
         };
 
         for name in &names {
-            let (atlas_tex, selected_indices) =
+            let atlas_tex =
                 match texture::upload_gif_atlas(&daemon.vk, &resized_frames, frame_w, frame_h) {
-                    Ok(result) => result,
+                    Ok(tex) => tex,
                     Err(e) => {
                         warn!(output = %name, "failed to upload GIF atlas: {e}");
                         continue;
                     }
                 };
-
-            // Build durations for the selected frames, distributing dropped
-            // frame time into the preceding kept frame.
-            let effective_durations: Vec<u32> = if selected_indices.len() < durations.len() {
-                let mut eff = Vec::with_capacity(selected_indices.len());
-                for (i, &idx) in selected_indices.iter().enumerate() {
-                    let next_idx = if i + 1 < selected_indices.len() {
-                        selected_indices[i + 1]
-                    } else {
-                        durations.len()
-                    };
-                    let total: u32 = durations[idx..next_idx].iter().sum();
-                    eff.push(total);
-                }
-                eff
-            } else {
-                durations.clone()
-            };
 
             let pipeline = daemon.pipeline.as_ref().unwrap();
 
@@ -869,8 +884,8 @@ fn handle_img(
                 output.descriptor_set = Some(ds);
 
                 let anim_state = animation::create_animation(
-                    selected_indices.len() as u32,
-                    effective_durations,
+                    gif_frames.frames.len() as u32,
+                    durations.clone(),
                     atlas_tex,
                     frame_w,
                     frame_h,

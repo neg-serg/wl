@@ -74,8 +74,6 @@ impl From<wayland_client::backend::WaylandError> for WaylandError {
 
 pub struct OutputData {
     pub wl_output: wl_output::WlOutput,
-    /// The wl_registry global name (ID) for this output, used for GlobalRemove tracking.
-    pub global_name: u32,
     pub name: Option<String>,
     pub width: u32,
     pub height: u32,
@@ -86,15 +84,17 @@ pub struct OutputData {
     pub surface: Option<wl_surface::WlSurface>,
     pub layer_surface: Option<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1>,
     pub configured: bool,
+    /// Set when the compositor closes our layer surface. The main loop checks
+    /// this flag to tear down Vulkan resources and recreate the surface.
+    pub surface_lost: bool,
     pub fractional_scale: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
     pub viewport: Option<wp_viewport::WpViewport>,
 }
 
 impl OutputData {
-    fn new(wl_output: wl_output::WlOutput, global_name: u32) -> Self {
+    fn new(wl_output: wl_output::WlOutput) -> Self {
         Self {
             wl_output,
-            global_name,
             name: None,
             width: 0,
             height: 0,
@@ -103,6 +103,7 @@ impl OutputData {
             surface: None,
             layer_surface: None,
             configured: false,
+            surface_lost: false,
             fractional_scale: None,
             viewport: None,
         }
@@ -308,6 +309,7 @@ impl WaylandState {
         output.fractional_scale = fractional_scale;
         output.viewport = viewport;
         output.configured = false;
+        output.surface_lost = false;
 
         tracing::debug!(
             output_index,
@@ -386,18 +388,14 @@ impl WaylandState {
         &self.data.outputs
     }
 
-    /// Return the set of output names currently known to Wayland.
-    /// Used by the main loop to detect removed outputs.
-    pub fn output_names(&self) -> Vec<String> {
+    /// Return indices of outputs whose layer surface was closed by the compositor.
+    pub fn lost_surface_indices(&self) -> Vec<usize> {
         self.data
             .outputs
             .iter()
             .enumerate()
-            .map(|(i, o)| {
-                o.name
-                    .clone()
-                    .unwrap_or_else(|| format!("output-{i}"))
-            })
+            .filter(|(_, o)| o.surface_lost)
+            .map(|(i, _)| i)
             .collect()
     }
 }
@@ -466,33 +464,20 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandData {
                     let output =
                         registry.bind::<wl_output::WlOutput, _, _>(name, version.min(4), qh, ());
                     tracing::debug!(name, version, "discovered wl_output");
-                    state.outputs.push(OutputData::new(output, name));
+                    state.outputs.push(OutputData::new(output));
                 }
                 _ => {}
             },
-            wl_registry::Event::GlobalRemove { name } => {
-                if let Some(idx) = state.outputs.iter().position(|o| o.global_name == name) {
-                    let removed = state.outputs.remove(idx);
-                    tracing::info!(
-                        global_name = name,
-                        output_name = ?removed.name,
-                        "output removed (GlobalRemove)"
-                    );
-                    // Destroy Wayland protocol objects owned by this output.
-                    if let Some(ls) = removed.layer_surface {
-                        ls.destroy();
-                    }
-                    if let Some(fs) = removed.fractional_scale {
-                        fs.destroy();
-                    }
-                    if let Some(vp) = removed.viewport {
-                        vp.destroy();
-                    }
-                    if let Some(s) = removed.surface {
-                        s.destroy();
-                    }
-                    removed.wl_output.release();
-                }
+            wl_registry::Event::GlobalRemove { name: _ } => {
+                // Output removal is handled opportunistically: callers should
+                // poll `outputs()` after each roundtrip. A more sophisticated
+                // implementation would match on the global name stored during
+                // bind, but for now we rely on wl_output::Event::Release or
+                // destroy callbacks if available.
+                //
+                // For wl_output specifically, the compositor sends
+                // `wl_output::Event::Name` / mode events, and on removal the
+                // proxy becomes inert. We leave cleanup to the caller.
             }
             _ => {}
         }
@@ -667,7 +652,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for WaylandData {
                 }
             }
             zwlr_layer_surface_v1::Event::Closed => {
-                tracing::info!("layer surface closed by compositor");
+                tracing::warn!("layer surface closed by compositor — will recreate");
                 if let Some(output) = state.output_mut_by_layer_surface(proxy) {
                     // Clean up: destroy the layer surface and surface.
                     if let Some(ls) = output.layer_surface.take() {
@@ -680,6 +665,9 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for WaylandData {
                         s.destroy();
                     }
                     output.configured = false;
+                    // Signal the main loop to recreate Vulkan resources and
+                    // a new layer surface for this output.
+                    output.surface_lost = true;
                 }
             }
             _ => {}
