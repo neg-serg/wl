@@ -22,15 +22,18 @@ void main() {
     if (pc.resize_mode == 0u) {
         // Crop: scale to fill, center-clip overflow
         if (pc.img_aspect > pc.screen_aspect) {
-            float scale = pc.screen_aspect / pc.img_aspect;
-            uv.x = uv.x * scale + (1.0 - scale) * 0.5;
-        } else {
+            // Image is wider relative to height → zoom in vertically, crop top/bottom
             float scale = pc.img_aspect / pc.screen_aspect;
             uv.y = uv.y * scale + (1.0 - scale) * 0.5;
+        } else {
+            // Image is narrower → zoom in horizontally, crop left/right
+            float scale = pc.screen_aspect / pc.img_aspect;
+            uv.x = uv.x * scale + (1.0 - scale) * 0.5;
         }
     } else if (pc.resize_mode == 1u) {
         // Fit: scale to fit, letterbox with black
         if (pc.img_aspect > pc.screen_aspect) {
+            // Image is wider → fit width, letterbox top/bottom
             float scale = pc.screen_aspect / pc.img_aspect;
             float offset = (1.0 - scale) * 0.5;
             if (uv.y < offset || uv.y > 1.0 - offset) {
@@ -39,6 +42,7 @@ void main() {
             }
             uv.y = (uv.y - offset) / scale;
         } else {
+            // Image is narrower → fit height, letterbox left/right
             float scale = pc.img_aspect / pc.screen_aspect;
             float offset = (1.0 - scale) * 0.5;
             if (uv.x < offset || uv.x > 1.0 - offset) {
