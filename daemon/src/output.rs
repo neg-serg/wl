@@ -170,6 +170,7 @@ impl Output {
         self.wallpaper = Some(wallpaper);
         self.animation = None;
         self.needs_redraw = true;
+        tracing::debug!(name = %self.name, "set_wallpaper: needs_redraw = true");
     }
 
     /// Clear wallpaper to nothing (will render solid color).

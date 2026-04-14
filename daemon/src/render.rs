@@ -94,6 +94,7 @@ pub unsafe fn render_frame(
         transition_pipeline,
         output.framebuffers.get(fb_index),
     ) {
+        tracing::debug!("render: transition path");
         if let (Some(descriptor_set), Some(vk_pipeline)) =
             (transition.descriptor_set, tp.get(transition.kind))
         {
@@ -139,6 +140,7 @@ pub unsafe fn render_frame(
         output.descriptor_set,
         output.framebuffers.get(fb_index),
     ) {
+        tracing::debug!("render: wallpaper path");
         let resize_mode = resize_to_u32(wallpaper.resize_mode);
 
         // Compute animation UV offset if animating
@@ -184,6 +186,7 @@ pub unsafe fn render_frame(
         }
     } else if let Some(image) = swapchain.images.get(image_index as usize).copied() {
         // No wallpaper: clear to solid color
+        tracing::debug!("render: solid color fallback (no wallpaper)");
         // SAFETY: cmd and image are valid.
         unsafe {
             record_clear_image(&vk.device, cmd, image, output.clear_color);

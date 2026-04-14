@@ -477,6 +477,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut device_lost = false;
         for output in daemon.outputs.values_mut() {
+            debug!(output = %output.name, needs_redraw = output.needs_redraw, has_swapchain = output.swapchain.is_some(), has_wallpaper = output.wallpaper.is_some(), has_descriptor = output.descriptor_set.is_some(), framebuffers = output.framebuffers.len(), "render loop tick");
             if output.needs_redraw && output.swapchain.is_some() {
                 // SAFETY: All Vulkan handles are valid.
                 if let Err(e) = unsafe {
@@ -1163,6 +1164,7 @@ fn set_static_wallpaper(
                 unsafe {
                     output.set_wallpaper(&daemon.vk.device, wallpaper);
                 }
+                debug!(output = %name, "set_static_wallpaper: non-transition path complete");
             }
         }
     }
