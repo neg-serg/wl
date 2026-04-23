@@ -46,14 +46,22 @@ pub fn upload_rgba8_texture(
             available = available.max(heap.size);
         }
     }
-    // Reject textures that would consume more than 25% of GPU memory to leave
+    // Tight VRAM budget: reject textures exceeding ~6.25% of GPU memory to keep
     // headroom for swapchain images, transitions, and driver overhead.
-    let vram_limit = available / 4;
+    // If the tight limit is exceeded, fall back to a hard limit of 25%.
+    let vram_limit = available / 16;
+    let hard_limit = available / 4;
     if available > 0 && total_needed > vram_limit {
-        return Err(VulkanError::TextureUpload(format!(
-            "image requires {total_needed} bytes but VRAM budget is ~{vram_limit} bytes \
-             (25% of {available} total)",
-        )));
+        if total_needed > hard_limit {
+            return Err(VulkanError::TextureUpload(format!(
+                "image requires {total_needed} bytes but VRAM hard limit is ~{hard_limit} bytes \
+                 (25% of {available} total)",
+            )));
+        }
+        tracing::warn!(
+            "image requires {total_needed} bytes, exceeds tight VRAM budget of {vram_limit} bytes \
+             (6.25% of {available}), but within hard limit of {hard_limit}"
+        );
     }
 
     let device = &vk.device;
