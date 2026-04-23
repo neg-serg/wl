@@ -9,8 +9,10 @@ mod vulkan;
 mod wayland;
 
 use std::collections::HashMap;
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
+use nix::sys::socket::{self as nix_socket, AddressFamily, SockFlag, SockType};
 use tracing::{debug, error, info, warn};
 
 use wl_common::ipc_types::*;
@@ -25,6 +27,29 @@ use crate::vulkan::swapchain::Swapchain;
 use crate::vulkan::texture;
 use crate::wayland::WaylandState;
 
+/// Check that no other instance of wl-daemon is running using an abstract
+/// Unix domain socket lock. This prevents duplicate daemon processes.
+fn check_single_instance() -> Result<(), String> {
+    let fd = nix_socket::socket(
+        AddressFamily::Unix,
+        SockType::Datagram,
+        SockFlag::empty(),
+        None,
+    )
+    .map_err(|e| format!("failed to create lock socket: {e}"))?;
+
+    let addr =
+        nix_socket::UnixAddr::new_abstract(b"wl-daemon").map_err(|e| format!("addr: {e}"))?;
+
+    match nix_socket::bind(fd.as_raw_fd(), &addr) {
+        Ok(()) => {
+            std::mem::forget(fd);
+            Ok(())
+        }
+        Err(_) => Err("wl-daemon уже запущен".into()),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -34,6 +59,11 @@ async fn main() {
         )
         .with_writer(std::io::stderr)
         .init();
+
+    if let Err(e) = check_single_instance() {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
 
     if let Err(e) = run().await {
         error!("{e}");
