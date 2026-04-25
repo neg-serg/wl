@@ -196,7 +196,9 @@ impl Output {
         unsafe {
             if let Some(transition) = self.transition.take() {
                 transition.old_texture.destroy(device);
-                transition.new_texture.destroy(device);
+                // NOTE: transition.new_texture shares handles with
+                // wallpaper.texture (set at transition start). The
+                // wallpaper destruction below handles those resources.
             }
             if let Some(animation) = self.animation.take() {
                 animation.atlas.destroy(device);
