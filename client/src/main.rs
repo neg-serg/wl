@@ -90,11 +90,16 @@ async fn run(cli: Cli) -> Result<(), String> {
             transition_pos,
             transition_bezier,
             transition_wave,
+            no_notify,
+            notify_path,
         } => {
             let position = parse_position(&transition_pos)?;
             let bezier = parse_bezier(&transition_bezier)?;
             let wave = parse_wave(&transition_wave)?;
             let parsed_outputs = parse_outputs(&outputs);
+
+            let expanded_notify = expand_tilde(&notify_path);
+            let notify_path_buf = std::path::PathBuf::from(&path);
 
             // Resolve upscale
             let mut prefs = wl_common::cache::load_upscale_prefs();
@@ -123,7 +128,13 @@ async fn run(cli: Cli) -> Result<(), String> {
                 },
             };
 
-            send_and_check(cmd).await
+            send_and_check(cmd).await?;
+
+            if !no_notify {
+                random::write_notify(&notify_path_buf, std::path::Path::new(&expanded_notify));
+            }
+
+            Ok(())
         }
         Commands::Clear { color, outputs } => {
             let rgb = parse_color(&color)?;
@@ -272,6 +283,8 @@ async fn handle_rotate(action: cli::RotateAction) -> Result<(), String> {
             upscale,
             upscale_cmd,
             upscale_scale,
+            no_notify,
+            notify_path,
         } => {
             // Parse interval
             let duration = wl_common::duration_parse::parse_duration(&interval).map_err(|e| {
@@ -298,6 +311,8 @@ async fn handle_rotate(action: cli::RotateAction) -> Result<(), String> {
                 UpscaleMode::Off => "off".to_string(),
             });
 
+            let expanded_notify = expand_tilde(&notify_path);
+
             let cmd = IpcCommand::RotateStart {
                 directories,
                 interval_secs: duration.as_secs(),
@@ -315,6 +330,8 @@ async fn handle_rotate(action: cli::RotateAction) -> Result<(), String> {
                 upscale_mode: upscale_mode_str,
                 upscale_cmd,
                 upscale_scale,
+                no_notify,
+                notify_path: expanded_notify,
             };
 
             send_and_check(cmd).await?;

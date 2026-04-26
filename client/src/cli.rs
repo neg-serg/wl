@@ -70,6 +70,14 @@ pub enum Commands {
         /// Wave frequency and amplitude as "freq,amp"
         #[arg(long, default_value = "20,20")]
         transition_wave: String,
+
+        /// Disable writing wallpaper path to notification file
+        #[arg(long)]
+        no_notify: bool,
+
+        /// Custom notification file path
+        #[arg(long, default_value = "~/.cache/quickshell-wallpaper-path")]
+        notify_path: String,
     },
 
     /// Clear wallpaper to solid color
@@ -243,6 +251,14 @@ pub enum RotateAction {
         /// Force upscale factor (2 or 4)
         #[arg(long)]
         upscale_scale: Option<u8>,
+
+        /// Disable writing wallpaper path to notification file
+        #[arg(long)]
+        no_notify: bool,
+
+        /// Custom notification file path
+        #[arg(long, default_value = "~/.cache/quickshell-wallpaper-path")]
+        notify_path: String,
     },
 
     /// Stop active wallpaper rotation

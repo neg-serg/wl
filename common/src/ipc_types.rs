@@ -37,6 +37,8 @@ pub enum IpcCommand {
         upscale_mode: Option<String>,
         upscale_cmd: Option<String>,
         upscale_scale: Option<u8>,
+        no_notify: bool,
+        notify_path: String,
     },
     RotateStop,
     RotateNext,

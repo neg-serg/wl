@@ -673,6 +673,11 @@ fn tick_rotation(daemon: &mut DaemonState) {
         warn!("rotation: failed to set wallpaper: {message}");
     } else {
         info!(path = %path_str, "rotation: wallpaper changed");
+        if let Some(ref rot) = daemon.rotation {
+            if !rot.no_notify {
+                write_notify_file(&path, &rot.notify_path);
+            }
+        }
     }
 }
 
@@ -745,6 +750,8 @@ fn handle_command(daemon: &mut DaemonState, cmd: IpcCommand) -> IpcResponse {
             upscale_mode,
             upscale_cmd,
             upscale_scale,
+            no_notify,
+            notify_path,
         } => handle_rotate_start(
             daemon,
             rotation::RotateStartParams {
@@ -755,6 +762,8 @@ fn handle_command(daemon: &mut DaemonState, cmd: IpcCommand) -> IpcResponse {
                 upscale_mode,
                 upscale_cmd,
                 upscale_scale,
+                no_notify,
+                notify_path: std::path::PathBuf::from(&notify_path),
             },
         ),
         IpcCommand::RotateStop => handle_rotate_stop(daemon),
@@ -1296,6 +1305,8 @@ fn handle_rotate_start(
         upscale_mode,
         upscale_cmd,
         upscale_scale,
+        no_notify,
+        notify_path,
     } = params;
 
     if interval_secs == 0 {
@@ -1323,6 +1334,8 @@ fn handle_rotate_start(
         upscale_mode,
         upscale_cmd,
         upscale_scale,
+        no_notify,
+        notify_path,
     };
 
     // Show first image immediately
@@ -1331,6 +1344,9 @@ fn handle_rotate_start(
         let result = handle_img(daemon, &path_str, None, rot.resize, &rot.transition);
         if let IpcResponse::Error { ref message } = result {
             warn!("rotation: failed to set first wallpaper: {message}");
+        }
+        if !rot.no_notify {
+            write_notify_file(&path, &rot.notify_path);
         }
     }
 
@@ -1353,8 +1369,8 @@ fn handle_rotate_stop(daemon: &mut DaemonState) -> IpcResponse {
 }
 
 fn handle_rotate_next(daemon: &mut DaemonState) -> IpcResponse {
-    let rot = match daemon.rotation.as_mut() {
-        Some(r) => r,
+    let (no_notify, notify_path, resize, transition) = match daemon.rotation.as_ref() {
+        Some(r) => (r.no_notify, r.notify_path.clone(), r.resize, r.transition),
         None => {
             return IpcResponse::Error {
                 message: "rotation is not active".to_string(),
@@ -1362,14 +1378,16 @@ fn handle_rotate_next(daemon: &mut DaemonState) -> IpcResponse {
         }
     };
 
-    let resize = rot.resize;
-    let transition = rot.transition;
-
-    if let Some(path) = rot.next_image() {
-        rot.reset_timer();
-        rot.save();
+    if let Some(path) = daemon.rotation.as_mut().and_then(|r| r.next_image()) {
+        if let Some(ref mut rot) = daemon.rotation {
+            rot.reset_timer();
+            rot.save();
+        }
         let path_str = path.to_string_lossy().to_string();
         handle_img(daemon, &path_str, None, resize, &transition);
+        if !no_notify {
+            write_notify_file(&path, &notify_path);
+        }
     } else {
         warn!("rotation: no images available after reshuffle");
     }
@@ -1405,6 +1423,15 @@ fn handle_rotate_status(daemon: &DaemonState) -> IpcResponse {
             images_remaining: None,
         },
     }
+}
+
+/// Write a wallpaper path to the notification file for accent sampling.
+fn write_notify_file(path: &std::path::Path, notify_path: &std::path::Path) {
+    if let Some(parent) = notify_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let _ = std::fs::write(notify_path, abs.to_string_lossy().as_bytes());
 }
 
 fn get_target_outputs(daemon: &DaemonState, targets: &Option<Vec<String>>) -> Vec<String> {

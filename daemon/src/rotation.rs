@@ -13,6 +13,8 @@ pub struct RotateStartParams {
     pub upscale_mode: Option<String>,
     pub upscale_cmd: Option<String>,
     pub upscale_scale: Option<u8>,
+    pub no_notify: bool,
+    pub notify_path: PathBuf,
 }
 
 /// Runtime rotation state held by the daemon.
@@ -27,6 +29,8 @@ pub struct RotationState {
     pub upscale_mode: Option<String>,
     pub upscale_cmd: Option<String>,
     pub upscale_scale: Option<u8>,
+    pub no_notify: bool,
+    pub notify_path: PathBuf,
 }
 
 impl RotationState {
@@ -104,6 +108,8 @@ impl RotationState {
             upscale_mode: self.upscale_mode.clone(),
             upscale_cmd: self.upscale_cmd.clone(),
             upscale_scale: self.upscale_scale,
+            no_notify: self.no_notify,
+            notify_path: Some(self.notify_path.to_string_lossy().to_string()),
         }
     }
 
@@ -128,6 +134,12 @@ impl RotationState {
             transition.duration_secs = dur;
         }
 
+        let notify_path = p
+            .notify_path
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_default();
+
         Self {
             directories,
             interval: Duration::from_secs(p.interval_secs),
@@ -139,6 +151,8 @@ impl RotationState {
             upscale_mode: p.upscale_mode.clone(),
             upscale_cmd: p.upscale_cmd.clone(),
             upscale_scale: p.upscale_scale,
+            no_notify: p.no_notify,
+            notify_path,
         }
     }
 

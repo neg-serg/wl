@@ -302,6 +302,10 @@ pub struct RotationPersist {
     pub upscale_cmd: Option<String>,
     #[serde(default)]
     pub upscale_scale: Option<u8>,
+    #[serde(default)]
+    pub no_notify: bool,
+    #[serde(default)]
+    pub notify_path: Option<String>,
 }
 
 /// Load rotation state from disk. Returns `None` if file does not exist.
