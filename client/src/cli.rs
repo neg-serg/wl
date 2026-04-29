@@ -94,6 +94,9 @@ pub enum Commands {
     /// Query current wallpaper state
     Query,
 
+    /// Alias for query
+    List,
+
     /// Restore wallpapers from previous session
     Restore,
 

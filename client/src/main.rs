@@ -144,7 +144,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             };
             send_and_check(cmd).await
         }
-        Commands::Query => {
+        Commands::Query | Commands::List => {
             let mut client = connect_or_error().await?;
             let response = client
                 .send_command(&IpcCommand::Query)
