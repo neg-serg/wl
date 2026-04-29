@@ -304,6 +304,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         daemon.rotation = Some(rot);
     }
 
+    // 9c. Auto-restore wallpaper from last session.
+    // This makes wallpaper appear immediately on startup, without relying on
+    // the external `wl restore` retry-loop in ExecStartPost (which can race
+    // against daemon IPC socket readiness during Vulkan init).
+    match handle_restore(&mut daemon) {
+        IpcResponse::Ok => info!("wallpaper restored from last session"),
+        IpcResponse::Error { message } => {
+            if message.contains("failed to load session state") {
+                debug!("no saved wallpaper state to restore (first run or empty state)");
+            } else {
+                warn!("auto-restore: {message}");
+            }
+        }
+        _ => {}
+    }
+
     info!("daemon ready");
 
     // 10. Main event loop
@@ -348,10 +364,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Err(e) = wl.dispatch_pending() {
             error!("wayland dispatch error: {e}");
+            if reconnect_wayland(&mut daemon, &mut wl).await {
+                info!("reconnected to wayland after dispatch error");
+                continue;
+            }
+            error!("wayland reconnection failed, shutting down");
             break;
         }
         if let Err(e) = wl.flush() {
             error!("wayland flush error: {e}");
+            if reconnect_wayland(&mut daemon, &mut wl).await {
+                info!("reconnected to wayland after flush error");
+                continue;
+            }
+            error!("wayland reconnection failed, shutting down");
             break;
         }
 
@@ -563,6 +589,179 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     info!("daemon stopped");
 
     Ok(())
+}
+
+/// Tear down per-output Vulkan resources that depend on the Wayland connection:
+/// swapchain (which owns the VkSurfaceKHR), framebuffers, and command buffers.
+/// Wallpaper textures and descriptor sets are preserved.
+fn teardown_output_surfaces(daemon: &mut DaemonState) {
+    // SAFETY: GPU must be idle before destroying swapchain resources.
+    unsafe { let _ = daemon.vk.device.device_wait_idle(); }
+
+    for output in daemon.outputs.values_mut() {
+        unsafe {
+            if let Some(old_cmd) = output.last_command_buffer.take() {
+                daemon
+                    .vk
+                    .device
+                    .free_command_buffers(daemon.vk.command_pool, &[old_cmd]);
+            }
+            for fb in output.framebuffers.drain(..) {
+                daemon.vk.device.destroy_framebuffer(fb, None);
+            }
+            if let Some(mut sc) = output.swapchain.take() {
+                sc.destroy(&daemon.vk.device);
+            }
+        }
+        output.animation = None;
+        output.transition = None;
+        output.needs_redraw = false;
+        output.needs_recreate = false;
+    }
+}
+
+/// Rebuild per-output Vulkan surfaces after Wayland reconnection: create layer
+/// surfaces, Vulkan surfaces, swapchains, and framebuffers. Descriptor sets are
+/// re-bound to the preserved wallpaper textures.
+fn rebuild_output_surfaces(daemon: &mut DaemonState, wl: &mut WaylandState) {
+    if let Err(e) = wl.create_all_layer_surfaces() {
+        error!("failed to create layer surfaces after reconnect: {e}");
+        return;
+    }
+    if let Err(e) = wl.roundtrip() {
+        error!("roundtrip after surface creation failed: {e}");
+        return;
+    }
+
+    let display_ptr = wl.get_display_ptr();
+
+    for (i, wl_output) in wl.outputs().iter().enumerate() {
+        let name = wl_output
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("output-{i}"));
+
+        let Some(output) = daemon.outputs.get_mut(&name) else {
+            warn!(output = %name, "output not found during surface rebuild");
+            continue;
+        };
+
+        if !wl_output.configured {
+            warn!(output = %name, "surface not configured after reconnect");
+            continue;
+        }
+
+        output.width = wl_output.width;
+        output.height = wl_output.height;
+        output.scale_factor = wl_output.scale_factor;
+
+        let Some(surface_ptr) = wl.get_surface_ptr(i) else {
+            warn!(output = %name, "no surface pointer after reconnect");
+            continue;
+        };
+
+        // SAFETY: display_ptr and surface_ptr are valid Wayland pointers.
+        let vk_surface = match unsafe {
+            Swapchain::create_surface(
+                &daemon.vk.entry,
+                &daemon.vk.instance,
+                display_ptr,
+                surface_ptr,
+                &daemon.vk.wayland_surface_fn,
+            )
+        } {
+            Ok(s) => s,
+            Err(e) => {
+                error!(output = %name, "failed to create VkSurface: {e}");
+                continue;
+            }
+        };
+
+        let (eff_w, eff_h) = output.effective_resolution();
+        let swapchain = match Swapchain::new(
+            &daemon.vk.instance,
+            &daemon.vk.device,
+            daemon.vk.physical_device,
+            vk_surface,
+            eff_w.max(1),
+            eff_h.max(1),
+        ) {
+            Ok(sc) => sc,
+            Err(e) => {
+                error!(output = %name, "failed to create swapchain: {e}");
+                continue;
+            }
+        };
+
+        if let Some(ref pipeline) = daemon.pipeline {
+            for &view in &swapchain.image_views {
+                match WallpaperPipeline::create_framebuffer(
+                    &daemon.vk.device,
+                    pipeline.render_pass,
+                    view,
+                    swapchain.extent.width,
+                    swapchain.extent.height,
+                ) {
+                    Ok(fb) => output.framebuffers.push(fb),
+                    Err(e) => {
+                        error!(output = %name, "failed to create framebuffer: {e}");
+                    }
+                }
+            }
+        }
+
+        output.swapchain = Some(swapchain);
+        output.needs_redraw = true;
+
+        if let (Some(ds), Some(pipeline), Some(wp)) =
+            (output.descriptor_set, &daemon.pipeline, &output.wallpaper)
+        {
+            WallpaperPipeline::update_descriptor_set(
+                &daemon.vk.device,
+                ds,
+                wp.texture.view,
+                pipeline.sampler,
+            );
+        }
+
+        info!(output = %name, "surface rebuilt after reconnection");
+    }
+}
+
+/// Try to reconnect to the Wayland display after a connection error.
+/// Tears down old surfaces, creates a fresh WaylandState, rebuilds all
+/// output surfaces, and restores wallpapers.
+async fn reconnect_wayland(daemon: &mut DaemonState, wl: &mut WaylandState) -> bool {
+    info!("wayland connection lost, attempting reconnection");
+
+    teardown_output_surfaces(daemon);
+
+    let new_wl = match WaylandState::connect() {
+        Ok(w) => w,
+        Err(e) => {
+            error!("wayland reconnect connect failed: {e}");
+            return false;
+        }
+    };
+
+    *wl = new_wl;
+
+    rebuild_output_surfaces(daemon, wl);
+
+    match handle_restore(daemon) {
+        IpcResponse::Ok => info!("wallpapers restored after reconnection"),
+        IpcResponse::Error { message } => {
+            if message.contains("failed to load session state") {
+                debug!("no saved wallpaper state to restore after reconnect");
+            } else {
+                warn!("wallpaper restore after reconnect: {message}");
+            }
+        }
+        _ => {}
+    }
+
+    info!("wayland reconnection succeeded");
+    true
 }
 
 /// Tick all active transitions, completing them when done.
