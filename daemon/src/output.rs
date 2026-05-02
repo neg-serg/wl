@@ -33,6 +33,9 @@ pub struct Output {
     pub needs_redraw: bool,
     /// Set when the swapchain is out-of-date or suboptimal and must be recreated.
     pub needs_recreate: bool,
+    /// Set when Vulkan surface is lost (VK_ERROR_SURFACE_LOST_KHR).
+    /// Triggers full Wayland + Vulkan surface recovery on the next tick.
+    pub surface_lost: bool,
 
     // Previous frame's command buffer, freed after fence wait
     pub last_command_buffer: Option<vk::CommandBuffer>,
@@ -146,6 +149,7 @@ impl Output {
             in_flight_fence,
             needs_redraw: true,
             needs_recreate: false,
+            surface_lost: false,
             last_command_buffer: None,
         })
     }

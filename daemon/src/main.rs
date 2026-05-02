@@ -381,6 +381,26 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
+        // Sync VK_ERROR_SURFACE_LOST_KHR from the daemon side to the Wayland side.
+        // When the Vulkan renderer detects a lost surface (screen off/on, driver
+        // invalidation), it sets `output.surface_lost` on the daemon Output. Here
+        // we destroy the corresponding Wayland surface so the recovery section
+        // below recreates it from scratch.
+        for i in 0..wl.outputs().len() {
+            let output_name = wl.outputs()[i]
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("output-{i}"));
+            if let Some(output) = daemon.outputs.get(&output_name)
+                && output.surface_lost
+            {
+                wl.destroy_output_surface(i);
+                if let Some(output) = daemon.outputs.get_mut(&output_name) {
+                    output.surface_lost = false;
+                }
+            }
+        }
+
         // Recover outputs whose layer surface was closed by the compositor.
         // This destroys stale Vulkan resources, recreates the Wayland surface,
         // and rebuilds the swapchain + framebuffers so rendering can resume.
@@ -390,6 +410,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             unsafe { let _ = daemon.vk.device.device_wait_idle(); }
 
             for idx in &lost {
+                // Clear the lost flag immediately so we don't retry every 16ms
+                // if recovery fails partway through.
+                wl.clear_surface_lost(*idx);
+
                 let output_name = wl.outputs()[*idx]
                     .name
                     .clone()
@@ -552,13 +576,51 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         device_lost = true;
                         break;
                     }
+                    if matches!(e, render::RenderError::NeedsRecreate) {
+                        warn!(output = %output.name, "swapchain out of date, recreating");
+                        let (eff_w, eff_h) = output.effective_resolution();
+                        match output.swapchain.as_mut().map(|sc| {
+                            sc.recreate(&daemon.vk.device, daemon.vk.physical_device, eff_w.max(1), eff_h.max(1))
+                        }) {
+                            Some(Ok(())) => {
+                                let sc = output.swapchain.as_ref().unwrap();
+                                output.framebuffers.clear();
+                                if let Some(ref pipeline) = daemon.pipeline {
+                                    for &view in &sc.image_views {
+                                        match WallpaperPipeline::create_framebuffer(
+                                            &daemon.vk.device,
+                                            pipeline.render_pass,
+                                            view,
+                                            sc.extent.width,
+                                            sc.extent.height,
+                                        ) {
+                                            Ok(fb) => output.framebuffers.push(fb),
+                                            Err(e) => {
+                                                error!(output = %output.name, "failed to create framebuffer: {e}");
+                                            }
+                                        }
+                                    }
+                                }
+                                output.needs_redraw = true;
+                            }
+                            Some(Err(e)) => {
+                                error!(output = %output.name, "failed to recreate swapchain: {e}");
+                                output.needs_redraw = true;
+                            }
+                            None => {
+                                warn!(output = %output.name, "no swapchain to recreate");
+                            }
+                        }
+                        continue;
+                    }
                     if matches!(
                         e,
                         render::RenderError::Vulkan(ash::vk::Result::ERROR_SURFACE_LOST_KHR)
                     ) {
                         // Surface was invalidated under us. Drop the swapchain so
-                        // the Closed-event recovery path can rebuild it next tick.
+                        // the recovery path can rebuild it next tick.
                         warn!(output = %output.name, "Vulkan surface lost, dropping swapchain");
+                        output.surface_lost = true;
                         unsafe {
                             if let Some(old_cmd) = output.last_command_buffer.take() {
                                 daemon.vk.device.free_command_buffers(daemon.vk.command_pool, &[old_cmd]);
@@ -872,10 +934,10 @@ fn tick_rotation(daemon: &mut DaemonState) {
         warn!("rotation: failed to set wallpaper: {message}");
     } else {
         info!(path = %path_str, "rotation: wallpaper changed");
-        if let Some(ref rot) = daemon.rotation {
-            if !rot.no_notify {
-                write_notify_file(&path, &rot.notify_path);
-            }
+        if let Some(ref rot) = daemon.rotation
+            && !rot.no_notify
+        {
+            write_notify_file(&path, &rot.notify_path);
         }
     }
 }

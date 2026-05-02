@@ -388,6 +388,37 @@ impl WaylandState {
         &self.data.outputs
     }
 
+    /// Destroy the Wayland surface and layer-surface for a given output, setting
+    /// `surface_lost = true` so the main loop's recovery section recreates them.
+    /// Safe to call multiple times; already-destroyed objects are a no-op.
+    pub fn destroy_output_surface(&mut self, output_index: usize) {
+        let Some(output) = self.data.outputs.get_mut(output_index) else {
+            return;
+        };
+        if let Some(ls) = output.layer_surface.take() {
+            ls.destroy();
+        }
+        if let Some(fs) = output.fractional_scale.take() {
+            fs.destroy();
+        }
+        if let Some(vp) = output.viewport.take() {
+            vp.destroy();
+        }
+        if let Some(s) = output.surface.take() {
+            s.destroy();
+        }
+        output.configured = false;
+        output.surface_lost = true;
+    }
+
+    /// Clear the `surface_lost` flag for a given output, bounding retry
+    /// to one attempt per Closed/VK_ERROR event.
+    pub fn clear_surface_lost(&mut self, output_index: usize) {
+        if let Some(output) = self.data.outputs.get_mut(output_index) {
+            output.surface_lost = false;
+        }
+    }
+
     /// Return indices of outputs whose layer surface was closed by the compositor.
     pub fn lost_surface_indices(&self) -> Vec<usize> {
         self.data
