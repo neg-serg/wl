@@ -89,6 +89,9 @@ pub struct OutputData {
     pub surface_lost: bool,
     pub fractional_scale: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
     pub viewport: Option<wp_viewport::WpViewport>,
+    /// Consecutive recovery failures for this output. Reset on successful recovery.
+    /// Used to bound retries and prevent infinite 16 ms spinning.
+    pub surface_loss_count: u32,
 }
 
 impl OutputData {
@@ -106,6 +109,7 @@ impl OutputData {
             surface_lost: false,
             fractional_scale: None,
             viewport: None,
+            surface_loss_count: 0,
         }
     }
 }
@@ -416,6 +420,29 @@ impl WaylandState {
     pub fn clear_surface_lost(&mut self, output_index: usize) {
         if let Some(output) = self.data.outputs.get_mut(output_index) {
             output.surface_lost = false;
+        }
+    }
+
+    /// Return the number of consecutive recovery failures for an output.
+    pub fn surface_loss_count(&self, output_index: usize) -> u32 {
+        self.data
+            .outputs
+            .get(output_index)
+            .map(|o| o.surface_loss_count)
+            .unwrap_or(0)
+    }
+
+    /// Increment the surface-loss retry counter for an output.
+    pub fn increment_surface_loss_count(&mut self, output_index: usize) {
+        if let Some(output) = self.data.outputs.get_mut(output_index) {
+            output.surface_loss_count += 1;
+        }
+    }
+
+    /// Reset the surface-loss retry counter (e.g. on successful recovery).
+    pub fn reset_surface_loss_count(&mut self, output_index: usize) {
+        if let Some(output) = self.data.outputs.get_mut(output_index) {
+            output.surface_loss_count = 0;
         }
     }
 

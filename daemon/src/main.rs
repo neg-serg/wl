@@ -410,9 +410,31 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             unsafe { let _ = daemon.vk.device.device_wait_idle(); }
 
             for idx in &lost {
-                // Clear the lost flag immediately so we don't retry every 16ms
-                // if recovery fails partway through.
-                wl.clear_surface_lost(*idx);
+                // Do not clear surface_lost until recovery succeeds.  If a
+                // transient error (e.g. VkSurface creation fails after DPMS
+                // off→on) makes recovery fail partway through, we retry next
+                // tick with exponential-ish backoff (1 s, 2 s, 4 s, …).
+                const MAX_SURFACE_LOSS_RETRIES: u32 = 8;
+                let retries = wl.surface_loss_count(*idx);
+                if retries >= MAX_SURFACE_LOSS_RETRIES {
+                    warn!(
+                        output_index = idx,
+                        retries,
+                        "surface recovery failed {MAX_SURFACE_LOSS_RETRIES} times, giving up until next surface-loss event"
+                    );
+                    wl.clear_surface_lost(*idx);
+                    wl.reset_surface_loss_count(*idx);
+                    continue;
+                }
+                // Exponential backoff: delay 1<<retries × 16 ms per tick.
+                // A failed attempt already took a full roundtrip (~1–5 ms),
+                // so the effective spacing is safe even for small exponents.
+                if retries > 0 && retries <= 6 {
+                    let delay = 1u64 << retries; // 2, 4, 8, 16, 32, 64 ms
+                    std::thread::sleep(std::time::Duration::from_millis(delay));
+                }
+
+                wl.increment_surface_loss_count(*idx);
 
                 let output_name = wl.outputs()[*idx]
                     .name
@@ -547,6 +569,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
 
+                wl.clear_surface_lost(*idx);
+                wl.reset_surface_loss_count(*idx);
                 info!(output = %output_name, "surface recovered successfully");
             }
         }
