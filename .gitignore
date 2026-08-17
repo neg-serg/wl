@@ -19,3 +19,7 @@ Thumbs.db
 # Environment
 .env*
 *.log
+
+# Speckit workflow working files
+.claude/
+specs/
