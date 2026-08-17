@@ -467,20 +467,21 @@ pub fn plan_gif_atlas(
     let max_by_mem = (mem_budget / frame_bytes) as usize;
     let max_frames = max_by_dim.min(max_by_mem).max(1).min(frame_count);
 
-    if frame_count > max_frames {
-        tracing::info!(
-            total_frames = frame_count,
-            max_frames,
-            vram_budget,
-            mem_budget,
-            frame_bytes,
-            "GIF atlas: sampling frames to fit dynamic VRAM/dimension budget"
-        );
-    }
-
     let kept_indices = select_atlas_frames(frame_count, max_frames);
 
     let atlas_width = frame_width * kept_indices.len() as u32;
+    tracing::info!(
+        total_frames = frame_count,
+        kept_frames = kept_indices.len(),
+        vram_bytes = heap,
+        budget_bytes = mem_budget,
+        frame_bytes,
+        max_frames,
+        sampled = frame_count > max_frames,
+        atlas_w = atlas_width,
+        atlas_h = frame_height,
+        "GIF atlas plan (dynamic VRAM budget)"
+    );
     Ok(GifAtlasPlan {
         kept_indices,
         atlas_width,
@@ -507,6 +508,15 @@ pub fn upload_gif_atlas(
     let frame_bytes = (frame_width as usize) * (frame_height as usize) * 4;
     let atlas_width = plan.atlas_width;
     let atlas_height = plan.atlas_height;
+
+    tracing::info!(
+        frames = plan.kept_indices.len(),
+        atlas_w = atlas_width,
+        atlas_h = atlas_height,
+        atlas_mib = (atlas_width as u64 * atlas_height as u64 * 4) / (1024 * 1024),
+        staging_bytes = frame_bytes,
+        "GIF atlas upload: streaming frame-by-frame"
+    );
 
     // --- Create the device-local atlas image ---
     let image_info = vk::ImageCreateInfo::default()

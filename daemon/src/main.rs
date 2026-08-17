@@ -74,6 +74,10 @@ async fn main() {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     info!("wl-daemon starting");
 
+    if let Some(total) = mem_total_bytes() {
+        info!(mem_total_mb = total / (1024 * 1024), "system memory");
+    }
+
     // 1. Connect to Wayland
     let mut wl = WaylandState::connect().map_err(|e| format!("wayland: {e}"))?;
     info!(outputs = wl.outputs().len(), "connected to wayland");
@@ -675,6 +679,30 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     info!("daemon stopped");
 
     Ok(())
+}
+
+/// Current resident set size of this process in bytes (Linux).
+fn rss_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let kb: u64 = rest.trim().trim_end_matches("kB").trim().parse().ok()?;
+            return Some(kb * 1024);
+        }
+    }
+    None
+}
+
+/// Total system RAM in bytes (Linux).
+fn mem_total_bytes() -> Option<u64> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in meminfo.lines() {
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            let kb: u64 = rest.trim().trim_end_matches("kB").trim().parse().ok()?;
+            return Some(kb * 1024);
+        }
+    }
+    None
 }
 
 /// Tear down per-output Vulkan resources that depend on the Wayland connection:
@@ -1337,7 +1365,29 @@ fn handle_img(
                 output.wallpaper = Some(wallpaper);
                 output.animation = Some(anim_state);
                 output.needs_redraw = true;
+
+                info!(
+                    output = %name,
+                    total_frames = info.frame_count,
+                    kept_frames = plan.kept_indices.len(),
+                    atlas_w = plan.atlas_width,
+                    atlas_h = plan.atlas_height,
+                    "gif wallpaper set"
+                );
             }
+        }
+
+        // Memory check: RSS should stay a small constant number of frames
+        // regardless of how long the animation is.
+        if let Some(rss) = rss_bytes() {
+            info!(
+                total_frames = info.frame_count,
+                kept_frames = plan.kept_indices.len(),
+                atlas_mib = (plan.atlas_width as u64 * plan.atlas_height as u64 * 4)
+                    / (1024 * 1024),
+                rss_mib = rss / (1024 * 1024),
+                "gif wallpaper loaded (streaming)"
+            );
         }
     } else {
         // Static image path
