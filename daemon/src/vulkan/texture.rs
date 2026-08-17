@@ -470,7 +470,7 @@ pub fn plan_gif_atlas(
     let kept_indices = select_atlas_frames(frame_count, max_frames);
 
     let atlas_width = frame_width * kept_indices.len() as u32;
-    tracing::info!(
+    tracing::debug!(
         total_frames = frame_count,
         kept_frames = kept_indices.len(),
         vram_bytes = heap,
@@ -509,7 +509,7 @@ pub fn upload_gif_atlas(
     let atlas_width = plan.atlas_width;
     let atlas_height = plan.atlas_height;
 
-    tracing::info!(
+    tracing::debug!(
         frames = plan.kept_indices.len(),
         atlas_w = atlas_width,
         atlas_h = atlas_height,

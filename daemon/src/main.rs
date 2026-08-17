@@ -75,7 +75,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     info!("wl-daemon starting");
 
     if let Some(total) = mem_total_bytes() {
-        info!(mem_total_mb = total / (1024 * 1024), "system memory");
+        debug!(mem_total_mb = total / (1024 * 1024), "system memory");
     }
 
     // 1. Connect to Wayland
@@ -1366,7 +1366,7 @@ fn handle_img(
                 output.animation = Some(anim_state);
                 output.needs_redraw = true;
 
-                info!(
+                debug!(
                     output = %name,
                     total_frames = info.frame_count,
                     kept_frames = plan.kept_indices.len(),
@@ -1380,7 +1380,7 @@ fn handle_img(
         // Memory check: RSS should stay a small constant number of frames
         // regardless of how long the animation is.
         if let Some(rss) = rss_bytes() {
-            info!(
+            debug!(
                 total_frames = info.frame_count,
                 kept_frames = plan.kept_indices.len(),
                 atlas_mib = (plan.atlas_width as u64 * plan.atlas_height as u64 * 4)
