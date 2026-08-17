@@ -1094,32 +1094,51 @@ fn handle_img(
     }
 
     if is_gif {
-        // GIF animation path
-        let gif_frames = match wl_common::image_decode::decode_gif_frames(img_path) {
-            Ok(f) => f,
+        // GIF animation path.
+        //
+        // First read header-level info (frame count, sizes, durations) — this
+        // does NOT decode any pixel data, so it is cheap even for long
+        // animations. It lets us compute how many frames fit the memory
+        // budget *before* allocating anything.
+        let info = match wl_common::image_decode::gif_info(img_path) {
+            Ok(i) => i,
             Err(e) => {
                 return IpcResponse::Error {
-                    message: format!("failed to decode GIF: {e}"),
+                    message: format!("failed to read GIF: {e}"),
                 };
             }
         };
 
-        if gif_frames.frames.len() <= 1 {
+        if info.frame_count <= 1 {
             // Single-frame GIF: treat as static image
-            let data = if gif_frames.frames.is_empty() {
-                return IpcResponse::Error {
-                    message: "GIF has no frames".to_string(),
-                };
-            } else {
-                &gif_frames.frames[0].data
+            let mut stream = match wl_common::image_decode::gif_frame_stream(img_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    return IpcResponse::Error {
+                        message: format!("failed to open GIF: {e}"),
+                    };
+                }
+            };
+            let frame = match stream.next_frame() {
+                Some(Ok(f)) => f,
+                Some(Err(e)) => {
+                    return IpcResponse::Error {
+                        message: format!("failed to decode GIF: {e}"),
+                    };
+                }
+                None => {
+                    return IpcResponse::Error {
+                        message: "GIF has no frames".to_string(),
+                    };
+                }
             };
             // Pre-resize single-frame GIF like static images
-            let original_w = gif_frames.width;
-            let original_h = gif_frames.height;
+            let original_w = info.width;
+            let original_h = info.height;
             let decoded = wl_common::image_decode::DecodedImage {
-                data: data.to_vec(),
-                width: gif_frames.width,
-                height: gif_frames.height,
+                data: frame.data,
+                width: info.width,
+                height: info.height,
             };
             let first_output = names.first().and_then(|n| daemon.outputs.get(n));
             let resized = if let Some(output) = first_output {
@@ -1147,42 +1166,109 @@ fn handle_img(
             );
         }
 
-        // Multi-frame GIF: pre-resize each frame, then create atlas
-        let durations: Vec<u32> = gif_frames.frames.iter().map(|f| f.duration_ms).collect();
-
-        // Pre-resize frames to target output resolution for pixel-perfect rendering
+        // Multi-frame GIF: decode, resize and upload frames one at a time.
+        // The resized frame size is deterministic, so compute it upfront and
+        // plan how many frames fit the dynamic VRAM budget before decoding
+        // any pixel data.
+        let original_w = info.width;
+        let original_h = info.height;
         let first_output = names.first().and_then(|n| daemon.outputs.get(n));
-        let (resized_frames, frame_w, frame_h) = if let Some(output) = first_output {
+        let (frame_w, frame_h, eff_w, eff_h) = if let Some(output) = first_output {
             let (eff_w, eff_h) = output.effective_resolution();
-            let mut resized = Vec::with_capacity(gif_frames.frames.len());
-            let mut rw = gif_frames.width;
-            let mut rh = gif_frames.height;
-            for frame in &gif_frames.frames {
-                let decoded = wl_common::image_decode::DecodedImage {
-                    data: frame.data.clone(),
-                    width: gif_frames.width,
-                    height: gif_frames.height,
-                };
-                let r = wl_common::image_decode::resize_for_output(decoded, eff_w, eff_h, resize);
-                rw = r.width;
-                rh = r.height;
-                resized.push(r.data);
-            }
-            (resized, rw, rh)
+            let (fw, fh) = wl_common::image_decode::resize_output_dims(
+                info.width,
+                info.height,
+                eff_w,
+                eff_h,
+                resize,
+            );
+            (fw, fh, eff_w, eff_h)
         } else {
-            let frames: Vec<Vec<u8>> = gif_frames.frames.iter().map(|f| f.data.clone()).collect();
-            (frames, gif_frames.width, gif_frames.height)
+            (info.width, info.height, info.width, info.height)
+        };
+
+        let plan = match texture::plan_gif_atlas(&daemon.vk, info.frame_count, frame_w, frame_h) {
+            Ok(p) => p,
+            Err(e) => {
+                return IpcResponse::Error {
+                    message: format!("failed to plan GIF atlas: {e}"),
+                };
+            }
         };
 
         for name in &names {
-            let (atlas_tex, _frame_offsets) =
-                match texture::upload_gif_atlas(&daemon.vk, &resized_frames, frame_w, frame_h) {
-                    Ok(result) => result,
-                    Err(e) => {
-                        warn!(output = %name, "failed to upload GIF atlas: {e}");
-                        continue;
+            // Stream-decode the GIF (once per output), resizing and uploading
+            // each kept frame before decoding the next. Peak host memory stays
+            // at one frame regardless of animation length — no giant decode
+            // of the whole animation, no full-size atlas staging buffer.
+            let mut stream = match wl_common::image_decode::gif_frame_stream(img_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(output = %name, "failed to open GIF stream: {e}");
+                    continue;
+                }
+            };
+            let mut stream_idx = 0usize;
+            let atlas_tex = match texture::upload_gif_atlas(
+                &daemon.vk,
+                &plan,
+                frame_w,
+                frame_h,
+                |idx| {
+                    // Advance the lazy decoder to the requested frame,
+                    // discarding skipped frames without retaining them.
+                    while stream_idx < idx {
+                        match stream.next_frame() {
+                            Some(Ok(_)) => {}
+                            Some(Err(e)) => return Err(e.to_string()),
+                            None => {
+                                return Err("GIF stream ended before requested frame".to_string());
+                            }
+                        }
+                        stream_idx += 1;
                     }
-                };
+                    let frame = match stream.next_frame() {
+                        Some(Ok(f)) => f,
+                        Some(Err(e)) => return Err(e.to_string()),
+                        None => {
+                            return Err("GIF stream ended before requested frame".to_string());
+                        }
+                    };
+                    stream_idx += 1;
+                    let decoded = wl_common::image_decode::DecodedImage {
+                        data: frame.data,
+                        width: info.width,
+                        height: info.height,
+                    };
+                    let r =
+                        wl_common::image_decode::resize_for_output(decoded, eff_w, eff_h, resize);
+                    Ok(r.data)
+                },
+            ) {
+                Ok(tex) => tex,
+                Err(e) => {
+                    warn!(output = %name, "failed to upload GIF atlas: {e}");
+                    continue;
+                }
+            };
+
+            // Build durations for the kept frames, distributing dropped
+            // frame time into the preceding kept frame.
+            let effective_durations: Vec<u32> = if plan.kept_indices.len() < info.frame_count {
+                let mut eff = Vec::with_capacity(plan.kept_indices.len());
+                for (i, &idx) in plan.kept_indices.iter().enumerate() {
+                    let next_idx = if i + 1 < plan.kept_indices.len() {
+                        plan.kept_indices[i + 1]
+                    } else {
+                        info.frame_count
+                    };
+                    let total: u32 = info.durations_ms[idx..next_idx].iter().sum();
+                    eff.push(total);
+                }
+                eff
+            } else {
+                info.durations_ms.clone()
+            };
 
             let pipeline = daemon.pipeline.as_ref().unwrap();
 
@@ -1209,8 +1295,8 @@ fn handle_img(
                 output.descriptor_set = Some(ds);
 
                 let anim_state = animation::create_animation(
-                    gif_frames.frames.len() as u32,
-                    durations.clone(),
+                    plan.kept_indices.len() as u32,
+                    effective_durations,
                     atlas_tex,
                     frame_w,
                     frame_h,
@@ -1220,7 +1306,7 @@ fn handle_img(
                 let wallpaper = Wallpaper {
                     source_path: path.to_string(),
                     format: ImageFormat::Gif,
-                    original_dimensions: (gif_frames.width, gif_frames.height),
+                    original_dimensions: (original_w, original_h),
                     display_dimensions: (frame_w, frame_h),
                     resize_mode: resize,
                     // The atlas texture is owned by the animation state.

@@ -7,6 +7,7 @@ edition = "2024"
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
 image = "0.25"
+gif = "0.14"
 resvg = "0.44"
 dirs = "6"
 serde_json = "1"

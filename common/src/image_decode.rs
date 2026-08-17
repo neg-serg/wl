@@ -22,17 +22,53 @@ pub struct DecodedImage {
     pub height: u32,
 }
 
-/// All frames of an animated GIF, each with RGBA8 data and duration.
-pub struct GifFrames {
-    pub frames: Vec<GifFrame>,
-    pub width: u32,
-    pub height: u32,
-}
-
 /// A single GIF frame.
 pub struct GifFrame {
     pub data: Vec<u8>,
     pub duration_ms: u32,
+}
+
+/// Header-level information about an animated GIF.
+///
+/// Obtained with [`gif_info`], which only reads the GIF header and frame
+/// descriptors — it never decodes pixel data, so it is cheap even for very
+/// long animations.
+pub struct GifInfo {
+    /// Logical screen width in pixels (all frames share this size).
+    pub width: u32,
+    /// Logical screen height in pixels.
+    pub height: u32,
+    /// Total number of frames in the animation.
+    pub frame_count: usize,
+    /// Display duration of every frame, in milliseconds, in frame order.
+    pub durations_ms: Vec<u32>,
+}
+
+/// A lazy, frame-at-a-time GIF decoder.
+///
+/// Only one decoded frame is held in memory at a time; the previous frame's
+/// buffer is dropped as soon as the next one is decoded. This keeps peak RAM
+/// usage proportional to a *single* frame instead of the whole animation.
+pub struct GifFrameStream {
+    frames: image::Frames<'static>,
+}
+
+impl GifFrameStream {
+    /// Decode and return the next frame, advancing the stream by one.
+    ///
+    /// Returns `None` once the animation has been fully read. The returned
+    /// frame is RGBA8 at the GIF's logical screen size.
+    pub fn next_frame(&mut self) -> Option<Result<GifFrame, DecodeError>> {
+        let frame = self.frames.next()?;
+        let frame = match frame {
+            Ok(f) => f,
+            Err(e) => return Some(Err(DecodeError::Image(e.to_string()))),
+        };
+        let (numer, denom) = frame.delay().numer_denom_ms();
+        let duration_ms = numer.checked_div(denom).unwrap_or(0);
+        let data = frame.into_buffer().into_raw();
+        Some(Ok(GifFrame { data, duration_ms }))
+    }
 }
 
 /// Errors that can occur during image decoding.
@@ -151,6 +187,36 @@ fn decode_svg(path: &Path) -> Result<DecodedImage, DecodeError> {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Compute the dimensions an image of `src_w`×`src_h` would have after
+/// [`resize_for_output`] with the given mode and target resolution.
+///
+/// This lets callers know the resized frame size *before* decoding any pixel
+/// data (e.g. to budget GPU memory for a GIF atlas upfront).
+pub fn resize_output_dims(
+    src_w: u32,
+    src_h: u32,
+    target_w: u32,
+    target_h: u32,
+    mode: ResizeMode,
+) -> (u32, u32) {
+    if mode == ResizeMode::No || (src_w == target_w && src_h == target_h) {
+        return (src_w, src_h);
+    }
+    match mode {
+        ResizeMode::Center | ResizeMode::Crop => (target_w, target_h),
+        ResizeMode::Fit => {
+            let scale_x = target_w as f64 / src_w as f64;
+            let scale_y = target_h as f64 / src_h as f64;
+            let scale = scale_x.min(scale_y);
+            (
+                ((src_w as f64 * scale).round() as u32).max(1),
+                ((src_h as f64 * scale).round() as u32).max(1),
+            )
+        }
+        ResizeMode::No => (src_w, src_h),
+    }
+}
+
 /// Resize a decoded image to match the output's effective resolution.
 ///
 /// - **Crop**: Center-crop the source to fill the target aspect ratio, then resize
@@ -218,13 +284,7 @@ pub fn resize_for_output(
             }
         }
         ResizeMode::Fit => {
-            let scale_x = target_w as f64 / img.width as f64;
-            let scale_y = target_h as f64 / img.height as f64;
-            let scale = scale_x.min(scale_y);
-
-            let fit_w = (img.width as f64 * scale).round() as u32;
-            let fit_h = (img.height as f64 * scale).round() as u32;
-
+            let (fit_w, fit_h) = resize_output_dims(img.width, img.height, target_w, target_h, mode);
             let resized =
                 image::imageops::resize(&src, fit_w.max(1), fit_h.max(1), FilterType::CatmullRom);
             let (w, h) = resized.dimensions();
@@ -259,43 +319,200 @@ pub fn decode_to_rgba8(path: &Path) -> Result<DecodedImage, DecodeError> {
     })
 }
 
-/// Decode all frames of an animated GIF at `path`.
+/// Read header-level information about an animated GIF at `path`.
 ///
-/// Each frame is returned as raw RGBA8 data together with its display duration
-/// in milliseconds.
-pub fn decode_gif_frames(path: &Path) -> Result<GifFrames, DecodeError> {
+/// This only decodes frame *metadata* (count and display delays) — no pixel
+/// data is decompressed — so it is cheap even for long animations and can be
+/// used to decide how many frames fit a memory budget before decoding.
+pub fn gif_info(path: &Path) -> Result<GifInfo, DecodeError> {
+    let file = fs::File::open(path)?;
+    let reader = BufReader::new(file);
+
+    let mut decoder = gif::DecodeOptions::new()
+        .read_info(reader)
+        .map_err(|e| DecodeError::Image(e.to_string()))?;
+
+    let width = u32::from(decoder.width());
+    let height = u32::from(decoder.height());
+
+    let mut frame_count = 0usize;
+    let mut durations_ms = Vec::new();
+    while let Some(frame) = decoder
+        .next_frame_info()
+        .map_err(|e| DecodeError::Image(e.to_string()))?
+    {
+        frame_count += 1;
+        // GIF delays are in units of 10 ms (image crate converts identically:
+        // delay * 10 ms), so this matches the durations reported per decoded frame.
+        durations_ms.push(u32::from(frame.delay) * 10);
+    }
+
+    if frame_count == 0 {
+        return Err(DecodeError::Image("GIF contains no frames".into()));
+    }
+
+    Ok(GifInfo {
+        width,
+        height,
+        frame_count,
+        durations_ms,
+    })
+}
+
+/// Open an animated GIF at `path` for frame-at-a-time decoding.
+///
+/// Decode frames with [`GifFrameStream::next_frame`]; the stream holds at most
+/// one decoded frame in memory at a time, so memory usage stays proportional to
+/// a single frame regardless of how long the animation is.
+pub fn gif_frame_stream(path: &Path) -> Result<GifFrameStream, DecodeError> {
     let file = fs::File::open(path)?;
     let reader = BufReader::new(file);
 
     let decoder = image::codecs::gif::GifDecoder::new(reader)
         .map_err(|e| DecodeError::Image(e.to_string()))?;
 
-    let raw_frames = decoder
-        .into_frames()
-        .collect_frames()
-        .map_err(|e| DecodeError::Image(e.to_string()))?;
+    // `into_frames` hands back an iterator that owns the decoder, so the
+    // stream is `'static` and can live independently of this function.
+    let frames: image::Frames<'static> = decoder.into_frames();
 
-    if raw_frames.is_empty() {
-        return Err(DecodeError::Image("GIF contains no frames".into()));
+    Ok(GifFrameStream { frames })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resize(src: (u32, u32), target: (u32, u32), mode: ResizeMode) -> (u32, u32) {
+        resize_output_dims(src.0, src.1, target.0, target.1, mode)
     }
 
-    // All frames share the same dimensions (the logical screen size).
-    let first = raw_frames[0].buffer();
-    let (width, height) = first.dimensions();
+    #[test]
+    fn resize_output_dims_no_mode_passthrough() {
+        let src = (1920, 1080);
+        assert_eq!(resize(src, (1280, 720), ResizeMode::No), src);
+        // Passthrough also when dims already match the target.
+        assert_eq!(resize(src, (1920, 1080), ResizeMode::Crop), src);
+        assert_eq!(resize(src, (1920, 1080), ResizeMode::Fit), src);
+        assert_eq!(resize(src, (1920, 1080), ResizeMode::Center), src);
+    }
 
-    let frames = raw_frames
-        .into_iter()
-        .map(|frame| {
-            let (numer, denom) = frame.delay().numer_denom_ms();
-            let duration_ms = if denom == 0 { 0 } else { numer / denom };
-            let data = frame.into_buffer().into_raw();
-            GifFrame { data, duration_ms }
-        })
-        .collect();
+    #[test]
+    fn resize_output_dims_crop_and_center_fill_target() {
+        assert_eq!(resize((1920, 1080), (1280, 720), ResizeMode::Crop), (1280, 720));
+        assert_eq!(resize((1000, 500), (100, 200), ResizeMode::Crop), (100, 200));
+        assert_eq!(resize((1000, 500), (100, 200), ResizeMode::Center), (100, 200));
+    }
 
-    Ok(GifFrames {
-        frames,
-        width,
-        height,
-    })
+    #[test]
+    fn resize_output_dims_fit_preserves_aspect() {
+        // Same aspect: exact fit.
+        assert_eq!(resize((1920, 1080), (1280, 720), ResizeMode::Fit), (1280, 720));
+        // Wider than target: fit by width.
+        assert_eq!(resize((1000, 500), (100, 200), ResizeMode::Fit), (100, 50));
+        // Taller than target: fit by height.
+        assert_eq!(resize((500, 1000), (100, 200), ResizeMode::Fit), (100, 200));
+        // Rounding keeps at least 1px.
+        assert_eq!(resize((3, 3), (100, 100), ResizeMode::Fit), (100, 100));
+    }
+
+    /// Encode a small animated GIF with `frame_count` frames of `width`x`height`,
+    /// each a solid color, with the given per-frame delays (in centiseconds).
+    fn write_test_gif(
+        dir: &Path,
+        name: &str,
+        width: u16,
+        height: u16,
+        frame_colors: &[(u8, u8, u8)],
+        delays_cs: &[u16],
+    ) -> std::path::PathBuf {
+        let path = dir.join(name);
+        let file = fs::File::create(&path).unwrap();
+        let mut encoder = gif::Encoder::new(file, width, height, &[]).unwrap();
+        encoder.set_repeat(gif::Repeat::Infinite).unwrap();
+        for (i, &(r, g, b)) in frame_colors.iter().enumerate() {
+            let rgba: Vec<u8> = (0..(width as usize * height as usize))
+                .flat_map(|_| [r, g, b, 255])
+                .collect();
+            let mut frame = gif::Frame::from_rgba_speed(
+                width,
+                height,
+                &mut rgba.clone(),
+                10, // default quantization speed
+            );
+            frame.delay = delays_cs[i];
+            encoder.write_frame(&frame).unwrap();
+        }
+        path
+    }
+
+    #[test]
+    fn gif_info_reads_header_without_pixels() {
+        let dir = std::env::temp_dir().join(format!("wl-gif-info-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = write_test_gif(
+            &dir,
+            "info.gif",
+            6,
+            4,
+            &[(10, 0, 0), (20, 0, 0), (30, 0, 0), (40, 0, 0)],
+            &[3, 5, 7, 11], // centiseconds -> 30, 50, 70, 110 ms
+        );
+
+        let info = gif_info(&path).unwrap();
+        assert_eq!(info.width, 6);
+        assert_eq!(info.height, 4);
+        assert_eq!(info.frame_count, 4);
+        assert_eq!(info.durations_ms, vec![30, 50, 70, 110]);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn gif_frame_stream_decodes_one_frame_at_a_time() {
+        let dir = std::env::temp_dir().join(format!("wl-gif-stream-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = write_test_gif(
+            &dir,
+            "stream.gif",
+            6,
+            4,
+            &[(10, 20, 30), (40, 50, 60), (70, 80, 90), (100, 110, 120)],
+            &[3, 5, 7, 11],
+        );
+
+        let mut stream = gif_frame_stream(&path).unwrap();
+        let mut count = 0;
+        let mut durations = Vec::new();
+        while let Some(frame) = stream.next_frame() {
+            let frame = frame.unwrap();
+            assert_eq!(frame.data.len(), 6 * 4 * 4);
+            // Every pixel is the frame's solid color (opaque).
+            for px in frame.data.chunks_exact(4) {
+                assert_eq!(
+                    px,
+                    &[10 + 30 * count as u8, 20 + 30 * count as u8, 30 + 30 * count as u8, 255]
+                );
+            }
+            durations.push(frame.duration_ms);
+            count += 1;
+        }
+        assert_eq!(count, 4);
+        assert_eq!(durations, vec![30, 50, 70, 110]);
+
+        // Stream durations agree with the header pass.
+        let info = gif_info(&path).unwrap();
+        assert_eq!(info.durations_ms, durations);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn gif_info_rejects_file_without_frames() {
+        let dir = std::env::temp_dir().join(format!("wl-gif-empty-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("empty.gif");
+        fs::write(&path, b"not a real gif").unwrap();
+        assert!(gif_info(&path).is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
 }

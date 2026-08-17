@@ -2037,6 +2037,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "dirs",
+ "gif 0.14.1",
  "image",
  "libc",
  "resvg",
