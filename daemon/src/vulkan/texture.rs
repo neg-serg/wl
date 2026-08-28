@@ -342,6 +342,9 @@ pub fn upload_rgba8_texture(
             device.destroy_image(image, None);
             device.free_memory(image_memory, None);
         }
+        if e == vk::Result::ERROR_DEVICE_LOST {
+            return Err(VulkanError::DeviceLost);
+        }
         return Err(VulkanError::TextureUpload(format!(
             "command submission: {e}"
         )));
@@ -838,6 +841,9 @@ pub fn upload_gif_atlas(
         unsafe {
             device.destroy_image(image, None);
             device.free_memory(image_memory, None);
+        }
+        if e == vk::Result::ERROR_DEVICE_LOST {
+            return Err(VulkanError::DeviceLost);
         }
         return Err(VulkanError::TextureUpload(format!(
             "atlas command submission: {e}"

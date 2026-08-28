@@ -20,7 +20,7 @@ use wl_common::ipc_types::*;
 use crate::ipc::IpcServer;
 use crate::output::{Output, Wallpaper};
 use crate::state::DaemonState;
-use crate::vulkan::VulkanContext;
+use crate::vulkan::{VulkanContext, VulkanError};
 use crate::vulkan::pipeline::{TransitionKind, TransitionPipeline, WallpaperPipeline};
 use crate::vulkan::shaders::ShaderModules;
 use crate::vulkan::swapchain::Swapchain;
@@ -667,7 +667,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         if device_lost {
-            break;
+            // A clean exit (Ok(())) would be treated as success by systemd's
+            // Restart=on-failure and leave the daemon dead until manual
+            // intervention; exit non-zero so the unit restarts with a fresh
+            // Vulkan device.
+            error!("Vulkan device lost, exiting for restart");
+            std::process::exit(1);
         }
     }
 
@@ -1274,6 +1279,10 @@ fn handle_img(
                 },
             ) {
                 Ok(tex) => tex,
+                Err(VulkanError::DeviceLost) => {
+                    error!(output = %name, "Vulkan device lost during GIF atlas upload, exiting for restart");
+                    std::process::exit(1);
+                }
                 Err(e) => {
                     warn!(output = %name, "failed to upload GIF atlas: {e}");
                     continue;
@@ -1487,6 +1496,14 @@ fn set_static_wallpaper(
     for name in names {
         let gpu_tex = match texture::upload_rgba8_texture(&daemon.vk, data, width, height) {
             Ok(tex) => tex,
+            Err(VulkanError::DeviceLost) => {
+                // The logical device is dead; staying alive just retries failed
+                // uploads forever. Exit non-zero so systemd Restart=on-failure
+                // re-spawns us with a fresh Vulkan device (wallpapers are
+                // restored from the saved session).
+                error!(output = %name, "Vulkan device lost during texture upload, exiting for restart");
+                std::process::exit(1);
+            }
             Err(e) => {
                 warn!(output = %name, "failed to upload texture: {e}");
                 continue;
