@@ -288,9 +288,13 @@ pub enum UpscaleMode {
 
 #[derive(Clone, ValueEnum)]
 pub enum ResizeArg {
+    /// Scale to fill the output, cropping the overflow (default)
     Crop,
+    /// Scale to fit inside the output, letterboxing with black bars
     Fit,
+    /// No scaling: native pixels, centered, overflow cropped
     No,
+    /// Same as `no` — native pixels, centered, overflow cropped
     Center,
 }
 
