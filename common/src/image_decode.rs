@@ -197,32 +197,59 @@ pub fn resize_output_dims(
     src_h: u32,
     target_w: u32,
     target_h: u32,
-    mode: ResizeMode,
+    _mode: ResizeMode,
 ) -> (u32, u32) {
-    if mode == ResizeMode::No || (src_w == target_w && src_h == target_h) {
+    if src_w == target_w && src_h == target_h {
         return (src_w, src_h);
     }
-    match mode {
-        ResizeMode::Center | ResizeMode::Crop => (target_w, target_h),
-        ResizeMode::Fit => {
-            let scale_x = target_w as f64 / src_w as f64;
-            let scale_y = target_h as f64 / src_h as f64;
-            let scale = scale_x.min(scale_y);
-            (
-                ((src_w as f64 * scale).round() as u32).max(1),
-                ((src_h as f64 * scale).round() as u32).max(1),
-            )
-        }
-        ResizeMode::No => (src_w, src_h),
-    }
+    // Every mode produces a texture at the target size: crop fills it, fit
+    // letterboxes onto it, center/no paste native pixels onto it. Keeping that
+    // invariant means the GPU draw is always 1:1 and the sampler never has to
+    // rescale the wallpaper — which is where detail used to get lost.
+    (target_w, target_h)
 }
 
-/// Resize a decoded image to match the output's effective resolution.
+/// Dimensions of a `src_w`×`src_h` image scaled to fit inside `target_w`×`target_h`
+/// without changing its aspect ratio (rounded, at least 1px).
+fn fitted_dims(src_w: u32, src_h: u32, target_w: u32, target_h: u32) -> (u32, u32) {
+    let scale = (target_w as f64 / src_w as f64).min(target_h as f64 / src_h as f64);
+    (
+        ((src_w as f64 * scale).round() as u32).max(1),
+        ((src_h as f64 * scale).round() as u32).max(1),
+    )
+}
+
+/// Resize `src` to `target_w`×`target_h` with a filter chosen by direction.
 ///
-/// - **Crop**: Center-crop the source to fill the target aspect ratio, then resize
-///   to target dimensions.
-/// - **Fit**: Scale to fit within target dimensions while preserving aspect ratio.
-/// - **No**: Return the image unchanged.
+/// `image`'s `resize` scales its kernel with the ratio, so a single call is
+/// already a correct resampler; the filter choice decides how sharp versus how
+/// ring-free the result is. Lanczos3 keeps more detail when shrinking (that is
+/// the common case: a 6K/8K source on a 4K output), while CatmullRom is the
+/// gentler choice when enlarging a small image.
+fn resample(src: &RgbaImage, target_w: u32, target_h: u32) -> RgbaImage {
+    let target_w = target_w.max(1);
+    let target_h = target_h.max(1);
+    let shrinking = target_w < src.width() || target_h < src.height();
+    let filter = if shrinking {
+        FilterType::Lanczos3
+    } else {
+        FilterType::CatmullRom
+    };
+    image::imageops::resize(src, target_w, target_h, filter)
+}
+
+/// Resize a decoded image to the output's effective resolution.
+///
+/// Every mode returns a texture sized exactly `target_w`×`target_h`, so the
+/// draw is 1:1 and nothing is rescaled on the GPU:
+///
+/// - **Crop**: center-crop the source to the target aspect ratio, then scale it
+///   up/down to fill the canvas.
+/// - **Fit**: scale to fit inside the target, centered on a black canvas
+///   (letterbox/pillarbox).
+/// - **Center**: paste the source at its native size, centered; overflow is
+///   cropped and the rest stays black.
+/// - **No**: same as **Center** — native pixels, no scaling.
 ///
 /// If the source dimensions already match the target, the image is returned as-is
 /// (zero-loss passthrough).
@@ -232,7 +259,7 @@ pub fn resize_for_output(
     target_h: u32,
     mode: ResizeMode,
 ) -> DecodedImage {
-    if mode == ResizeMode::No || (img.width == target_w && img.height == target_h) {
+    if img.width == target_w && img.height == target_h {
         return img;
     }
 
@@ -240,7 +267,8 @@ pub fn resize_for_output(
         .expect("DecodedImage data length must match width*height*4");
 
     match mode {
-        ResizeMode::Center => {
+        // No scaling: native pixels centered, overflow cropped.
+        ResizeMode::Center | ResizeMode::No => {
             let mut canvas = RgbaImage::from_pixel(target_w, target_h, image::Rgba([0, 0, 0, 255]));
             let paste_w = img.width.min(target_w);
             let paste_h = img.height.min(target_h);
@@ -273,28 +301,28 @@ pub fn resize_for_output(
             let crop_x = (img.width.saturating_sub(crop_w)) / 2;
             let crop_y = (img.height.saturating_sub(crop_h)) / 2;
 
-            let cropped = image::imageops::crop_imm(&src, crop_x, crop_y, crop_w, crop_h);
-            let resized =
-                image::imageops::resize(&*cropped, target_w, target_h, FilterType::CatmullRom);
-            let (w, h) = resized.dimensions();
+            let cropped =
+                image::imageops::crop_imm(&src, crop_x, crop_y, crop_w, crop_h).to_image();
+            let resized = resample(&cropped, target_w, target_h);
             DecodedImage {
                 data: resized.into_raw(),
-                width: w,
-                height: h,
+                width: target_w,
+                height: target_h,
             }
         }
         ResizeMode::Fit => {
-            let (fit_w, fit_h) = resize_output_dims(img.width, img.height, target_w, target_h, mode);
-            let resized =
-                image::imageops::resize(&src, fit_w.max(1), fit_h.max(1), FilterType::CatmullRom);
-            let (w, h) = resized.dimensions();
+            let (fit_w, fit_h) = fitted_dims(img.width, img.height, target_w, target_h);
+            let resized = resample(&src, fit_w, fit_h);
+            let mut canvas = RgbaImage::from_pixel(target_w, target_h, image::Rgba([0, 0, 0, 255]));
+            let dst_x = (target_w.saturating_sub(fit_w)) / 2;
+            let dst_y = (target_h.saturating_sub(fit_h)) / 2;
+            image::imageops::overlay(&mut canvas, &resized, dst_x as i64, dst_y as i64);
             DecodedImage {
-                data: resized.into_raw(),
-                width: w,
-                height: h,
+                data: canvas.into_raw(),
+                width: target_w,
+                height: target_h,
             }
         }
-        ResizeMode::No => unreachable!(),
     }
 }
 
@@ -387,32 +415,138 @@ mod tests {
     }
 
     #[test]
-    fn resize_output_dims_no_mode_passthrough() {
+    fn resize_output_dims_passthrough_when_dims_match() {
         let src = (1920, 1080);
-        assert_eq!(resize(src, (1280, 720), ResizeMode::No), src);
-        // Passthrough also when dims already match the target.
         assert_eq!(resize(src, (1920, 1080), ResizeMode::Crop), src);
         assert_eq!(resize(src, (1920, 1080), ResizeMode::Fit), src);
         assert_eq!(resize(src, (1920, 1080), ResizeMode::Center), src);
+        assert_eq!(resize(src, (1920, 1080), ResizeMode::No), src);
     }
 
     #[test]
-    fn resize_output_dims_crop_and_center_fill_target() {
+    fn resize_output_dims_every_mode_fills_target() {
+        // Crop fills, fit letterboxes, center/no paste — all end up target-sized,
+        // so the GPU draw stays 1:1.
         assert_eq!(resize((1920, 1080), (1280, 720), ResizeMode::Crop), (1280, 720));
         assert_eq!(resize((1000, 500), (100, 200), ResizeMode::Crop), (100, 200));
         assert_eq!(resize((1000, 500), (100, 200), ResizeMode::Center), (100, 200));
+        assert_eq!(resize((1000, 500), (100, 200), ResizeMode::No), (100, 200));
+        assert_eq!(resize((1920, 1080), (1280, 720), ResizeMode::Fit), (1280, 720));
+        assert_eq!(resize((1000, 500), (100, 200), ResizeMode::Fit), (100, 200));
+        assert_eq!(resize((3, 3), (100, 100), ResizeMode::Fit), (100, 100));
     }
 
     #[test]
-    fn resize_output_dims_fit_preserves_aspect() {
-        // Same aspect: exact fit.
-        assert_eq!(resize((1920, 1080), (1280, 720), ResizeMode::Fit), (1280, 720));
-        // Wider than target: fit by width.
-        assert_eq!(resize((1000, 500), (100, 200), ResizeMode::Fit), (100, 50));
-        // Taller than target: fit by height.
-        assert_eq!(resize((500, 1000), (100, 200), ResizeMode::Fit), (100, 200));
-        // Rounding keeps at least 1px.
-        assert_eq!(resize((3, 3), (100, 100), ResizeMode::Fit), (100, 100));
+    fn fitted_dims_preserves_aspect() {
+        assert_eq!(fitted_dims(1920, 1080, 1280, 720), (1280, 720));
+        assert_eq!(fitted_dims(1000, 500, 100, 200), (100, 50));
+        assert_eq!(fitted_dims(500, 1000, 100, 200), (100, 200));
+        assert_eq!(fitted_dims(3, 3, 100, 100), (100, 100));
+    }
+
+    fn solid(width: u32, height: u32, rgba: [u8; 4]) -> DecodedImage {
+        DecodedImage {
+            data: rgba
+                .iter()
+                .copied()
+                .cycle()
+                .take((width * height * 4) as usize)
+                .collect(),
+            width,
+            height,
+        }
+    }
+
+    fn pixel(img: &DecodedImage, x: u32, y: u32) -> [u8; 4] {
+        let off = ((y * img.width + x) * 4) as usize;
+        [
+            img.data[off],
+            img.data[off + 1],
+            img.data[off + 2],
+            img.data[off + 3],
+        ]
+    }
+
+    #[test]
+    fn resize_no_and_center_paste_native_pixels() {
+        for mode in [ResizeMode::No, ResizeMode::Center] {
+            let img = solid(100, 50, [10, 20, 30, 255]);
+            let out = resize_for_output(img, 200, 200, mode);
+            assert_eq!((out.width, out.height), (200, 200));
+            // Center of the canvas is the image itself…
+            assert_eq!(pixel(&out, 100, 100), [10, 20, 30, 255]);
+            // …and the untouched frame is black.
+            assert_eq!(pixel(&out, 5, 5), [0, 0, 0, 255]);
+        }
+    }
+
+    #[test]
+    fn resize_center_crops_overflow_without_scaling() {
+        let img = solid(400, 200, [1, 2, 3, 255]);
+        let out = resize_for_output(img, 200, 100, ResizeMode::Center);
+        assert_eq!((out.width, out.height), (200, 100));
+        assert_eq!(pixel(&out, 0, 0), [1, 2, 3, 255]);
+        assert_eq!(pixel(&out, 199, 99), [1, 2, 3, 255]);
+    }
+
+    #[test]
+    fn resize_fit_letterboxes_onto_black_canvas() {
+        // 100x50 into 100x200 → 100x50 content, 75px black bars above and below.
+        let img = solid(100, 50, [9, 9, 9, 255]);
+        let out = resize_for_output(img, 100, 200, ResizeMode::Fit);
+        assert_eq!((out.width, out.height), (100, 200));
+        assert_eq!(pixel(&out, 50, 10), [0, 0, 0, 255]);
+        assert_eq!(pixel(&out, 50, 100), [9, 9, 9, 255]);
+    }
+
+    #[test]
+    fn resample_averages_away_near_nyquist_detail_when_shrinking() {
+        // A 1px checkerboard at 4x the target: a correct resampler averages it
+        // into a flat mid grey instead of leaving aliasing behind.
+        let (w, h) = (64u32, 64u32);
+        let mut data = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                let v = if (x + y) % 2 == 0 { 0 } else { 255 };
+                data.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        let src = RgbaImage::from_raw(w, h, data).unwrap();
+        let out = resample(&src, 16, 16);
+        assert_eq!(out.dimensions(), (16, 16));
+        for p in out.pixels() {
+            let v = p.0[0] as i32;
+            assert!((v - 128).abs() <= 8, "checkerboard should average to ~128, got {v}");
+        }
+    }
+
+    #[test]
+    fn resample_keeps_average_and_range_when_enlarging() {
+        // Enlarging a smooth two-tone test image must not blow up the range or
+        // shift the average much (no ringing overflow past the source range).
+        let (w, h) = (8u32, 8u32);
+        let mut data = Vec::with_capacity((w * h * 4) as usize);
+        for _y in 0..h {
+            for x in 0..w {
+                let v = if x < w / 2 { 40 } else { 200 };
+                data.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        let src = RgbaImage::from_raw(w, h, data).unwrap();
+        let out = resample(&src, 32, 32);
+        let mean = |img: &RgbaImage| {
+            let sum: u32 = img.pixels().map(|p| p.0[0] as u32).sum();
+            sum as f64 / img.pixels().len() as f64
+        };
+        assert!((mean(&out) - mean(&src)).abs() < 6.0);
+        // CatmullRom sharpens the step slightly (small overshoot), so allow a
+        // few units beyond the source range, but nothing close to clipping.
+        let min = out.pixels().map(|p| p.0[0]).min().unwrap() as i32;
+        let max = out.pixels().map(|p| p.0[0]).max().unwrap() as i32;
+        assert!(
+            (min - 40).abs() <= 12 && (max - 200).abs() <= 12,
+            "range {min}..{max} drifted too far from the source range"
+        );
     }
 
     /// Encode a small animated GIF with `frame_count` frames of `width`x`height`,

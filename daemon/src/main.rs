@@ -1165,20 +1165,12 @@ fn handle_img(
                     };
                 }
             };
-            // Pre-resize single-frame GIF like static images
-            let original_w = info.width;
-            let original_h = info.height;
+            // Single-frame GIF: uploaded per output and resized there, like
+            // the static image path.
             let decoded = wl_common::image_decode::DecodedImage {
                 data: frame.data,
                 width: info.width,
                 height: info.height,
-            };
-            let first_output = names.first().and_then(|n| daemon.outputs.get(n));
-            let resized = if let Some(output) = first_output {
-                let (eff_w, eff_h) = output.effective_resolution();
-                wl_common::image_decode::resize_for_output(decoded, eff_w, eff_h, resize)
-            } else {
-                decoded
             };
 
             return set_static_wallpaper(
@@ -1189,11 +1181,9 @@ fn handle_img(
                     resize,
                     transition_params,
                     transition_kind,
-                    data: &resized.data,
-                    width: resized.width,
-                    height: resized.height,
-                    original_width: original_w,
-                    original_height: original_h,
+                    data: &decoded.data,
+                    width: decoded.width,
+                    height: decoded.height,
                     is_gif: true,
                 },
             );
@@ -1409,34 +1399,9 @@ fn handle_img(
             }
         };
 
-        // Pre-resize image to match each output's effective resolution for
-        // pixel-perfect rendering. We resize per-output since monitors may
-        // differ in resolution/scale. For multiple outputs we decode once
-        // and resize per target.
-        let original_w = decoded.width;
-        let original_h = decoded.height;
-
-        // For simplicity, resize to the first target output's effective resolution.
-        // (Multi-output with different resolutions: we use the first target's dims,
-        // which is correct for the common single-monitor case.)
-        let first_output = names.first().and_then(|n| daemon.outputs.get(n));
-        let resized = if let Some(output) = first_output {
-            let (eff_w, eff_h) = output.effective_resolution();
-            info!(
-                img_w = original_w,
-                img_h = original_h,
-                eff_w = eff_w,
-                eff_h = eff_h,
-                scale = output.scale_factor,
-                logical_w = output.width,
-                logical_h = output.height,
-                "pre-resize: image vs effective resolution"
-            );
-            wl_common::image_decode::resize_for_output(decoded, eff_w, eff_h, resize)
-        } else {
-            decoded
-        };
-
+        // The image is uploaded per output and resized there, so each monitor
+        // gets pixels at its own effective resolution (monitors may differ in
+        // resolution/scale) and the GPU never has to rescale the wallpaper.
         return set_static_wallpaper(
             daemon,
             StaticWallpaperParams {
@@ -1445,11 +1410,9 @@ fn handle_img(
                 resize,
                 transition_params,
                 transition_kind,
-                data: &resized.data,
-                width: resized.width,
-                height: resized.height,
-                original_width: original_w,
-                original_height: original_h,
+                data: &decoded.data,
+                width: decoded.width,
+                height: decoded.height,
                 is_gif: false,
             },
         );
@@ -1468,11 +1431,10 @@ struct StaticWallpaperParams<'a> {
     resize: ResizeMode,
     transition_params: &'a TransitionParams,
     transition_kind: Option<TransitionKind>,
+    /// Pixels at the source image's own resolution; resized per output below.
     data: &'a [u8],
     width: u32,
     height: u32,
-    original_width: u32,
-    original_height: u32,
     is_gif: bool,
 }
 
@@ -1489,12 +1451,67 @@ fn set_static_wallpaper(
         data,
         width,
         height,
-        original_width,
-        original_height,
         is_gif,
     } = params;
+
+    // One resize per distinct target resolution: monitors can differ in
+    // resolution/scale, and each one gets a texture matching its own effective
+    // resolution so the draw stays 1:1.
+    let mut targets: Vec<(u32, u32)> = Vec::new();
     for name in names {
-        let gpu_tex = match texture::upload_rgba8_texture(&daemon.vk, data, width, height) {
+        let target = daemon
+            .outputs
+            .get(name)
+            .map(|o| o.effective_resolution())
+            .unwrap_or((width, height));
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    // `None` means "use the source pixels as they are".
+    let prepared: Vec<((u32, u32), Option<Vec<u8>>)> = targets
+        .iter()
+        .map(|&(tw, th)| {
+            if (tw, th) == (width, height) {
+                ((tw, th), None)
+            } else {
+                let resized = wl_common::image_decode::resize_for_output(
+                    wl_common::image_decode::DecodedImage {
+                        data: data.to_vec(),
+                        width,
+                        height,
+                    },
+                    tw,
+                    th,
+                    resize,
+                );
+                debug!(
+                    img_w = width,
+                    img_h = height,
+                    target_w = resized.width,
+                    target_h = resized.height,
+                    ?resize,
+                    "pre-resize: image -> effective resolution"
+                );
+                ((resized.width, resized.height), Some(resized.data))
+            }
+        })
+        .collect();
+
+    for name in names {
+        let target = daemon
+            .outputs
+            .get(name)
+            .map(|o| o.effective_resolution())
+            .unwrap_or((width, height));
+        let (tex_w, tex_h, pixels) = match prepared.iter().find(|(dims, _)| *dims == target) {
+            Some((dims, Some(buf))) => (dims.0, dims.1, buf.as_slice()),
+            Some((dims, None)) => (dims.0, dims.1, data),
+            // Unreachable: every requested output was planned above.
+            None => (width, height, data),
+        };
+
+        let gpu_tex = match texture::upload_rgba8_texture(&daemon.vk, pixels, tex_w, tex_h) {
             Ok(tex) => tex,
             Err(VulkanError::DeviceLost) => {
                 // The logical device is dead; staying alive just retries failed
@@ -1580,7 +1597,7 @@ fn set_static_wallpaper(
                     } else {
                         ImageFormat::Jpeg
                     },
-                    original_dimensions: (original_width, original_height),
+                    original_dimensions: (width, height),
                     display_dimensions: (t.new_texture.width, t.new_texture.height),
                     resize_mode: resize,
                     texture: output::GpuTexture {
@@ -1630,7 +1647,7 @@ fn set_static_wallpaper(
                     } else {
                         ImageFormat::Jpeg
                     },
-                    original_dimensions: (original_width, original_height),
+                    original_dimensions: (width, height),
                     display_dimensions: (gpu_tex.width, gpu_tex.height),
                     resize_mode: resize,
                     texture: gpu_tex,

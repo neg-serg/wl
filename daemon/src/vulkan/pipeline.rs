@@ -297,11 +297,18 @@ impl WallpaperPipeline {
     // Sampler
     // ------------------------------------------------------------------
 
+    /// Linear filtering, not nearest: the full-screen triangle samples each
+    /// fragment centre at `(i + 0.5) / size`, which is exactly a texel centre,
+    /// so a 1:1 draw still returns the texel verbatim (no half-texel blur).
+    /// When the texture *is* scaled (a surface whose effective resolution
+    /// differs from the pre-resized texture, animated atlases, fractional
+    /// scales), bilinear filtering averages the 2x2 footprint instead of
+    /// point-sampling it, which is what kept fine detail aliasing away.
     fn create_sampler(device: &ash::Device) -> Result<vk::Sampler, VulkanError> {
         let sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::NEAREST)
-            .min_filter(vk::Filter::NEAREST)
-            .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR)
+            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
             .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
             .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
             .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
