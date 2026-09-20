@@ -388,6 +388,29 @@ impl WaylandState {
     }
 
     /// Read-only access to the output list.
+    /// Full-buffer damage + re-commit of the layer surface for `output_name`.
+    ///
+    /// Vulkan WSI presents a new swapchain image without reporting any damage, so a
+    /// compositor that caches the layer's texture keeps whatever it had for that
+    /// image: the wallpaper then looks frozen behind the panel's popups (and the
+    /// blurred backdrop they build from it) until something else damages the
+    /// region — moving a window over the popup is the usual accidental fix. An
+    /// explicit full-buffer damage on every presented frame makes the compositor
+    /// re-read the surface instead. Cheap: the frame is presented once per change
+    /// on a static wallpaper, and an animating one repaints the screen anyway.
+    pub fn damage_full_surface_by_name(&self, output_name: &str) {
+        if let Some(output) = self
+            .outputs()
+            .iter()
+            .find(|o| o.name.as_deref() == Some(output_name))
+        {
+            if let Some(ref surface) = output.surface {
+                surface.damage_buffer(0, 0, i32::MAX, i32::MAX);
+                surface.commit();
+            }
+        }
+    }
+
     pub fn outputs(&self) -> &[OutputData] {
         &self.data.outputs
     }
