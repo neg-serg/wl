@@ -663,6 +663,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
                     warn!(output = %output.name, "render error: {e}");
+                } else {
+                    // Frame presented: make the compositor re-read the surface —
+                    // Vulkan WSI reports no damage, so without this the wallpaper
+                    // can stay frozen behind panel popups (see
+                    // WaylandConnection::damage_full_surface_by_name).
+                    wl.damage_full_surface_by_name(output.name.as_str());
                 }
             }
         }
