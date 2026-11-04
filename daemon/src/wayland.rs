@@ -688,8 +688,17 @@ impl Dispatch<wl_output::WlOutput, ()> for WaylandData {
                 height,
                 refresh,
             } => {
-                output.width = width as u32;
-                output.height = height as u32;
+                // Mode dimensions are *physical* pixels; the layer-surface
+                // Configure carries the *logical* size that
+                // `effective_resolution()` multiplies by the scale factor.
+                // Writing the physical size here after a configure made the
+                // daemon compute physical x scale (a 4K/2x output became 7680)
+                // and rebuild its swapchain at double size. The mode is only a
+                // fallback until the compositor has configured the surface.
+                if !output.configured {
+                    output.width = width as u32;
+                    output.height = height as u32;
+                }
                 output.refresh_mhz = refresh as u32;
                 tracing::debug!(
                     width,
