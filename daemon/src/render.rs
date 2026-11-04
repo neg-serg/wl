@@ -87,8 +87,7 @@ pub unsafe fn render_frame(
 
     let resize_to_u32 = |m: wl_common::ipc_types::ResizeMode| -> u32 {
         match m {
-            wl_common::ipc_types::ResizeMode::Crop
-            | wl_common::ipc_types::ResizeMode::Center => 0,
+            wl_common::ipc_types::ResizeMode::Crop | wl_common::ipc_types::ResizeMode::Center => 0,
             wl_common::ipc_types::ResizeMode::Fit => 1,
             wl_common::ipc_types::ResizeMode::No => 2,
         }
@@ -275,19 +274,17 @@ pub unsafe fn render_frame(
                 vk.device.free_command_buffers(vk.command_pool, &[cmd]);
 
                 let semaphore_info = vk::SemaphoreCreateInfo::default();
-                let new_image_available =
-                    match vk.device.create_semaphore(&semaphore_info, None) {
-                        Ok(semaphore) => semaphore,
-                        Err(e) => return Err(RenderError::Vulkan(e)),
-                    };
-                let new_render_finished =
-                    match vk.device.create_semaphore(&semaphore_info, None) {
-                        Ok(semaphore) => semaphore,
-                        Err(e) => {
-                            vk.device.destroy_semaphore(new_image_available, None);
-                            return Err(RenderError::Vulkan(e));
-                        }
-                    };
+                let new_image_available = match vk.device.create_semaphore(&semaphore_info, None) {
+                    Ok(semaphore) => semaphore,
+                    Err(e) => return Err(RenderError::Vulkan(e)),
+                };
+                let new_render_finished = match vk.device.create_semaphore(&semaphore_info, None) {
+                    Ok(semaphore) => semaphore,
+                    Err(e) => {
+                        vk.device.destroy_semaphore(new_image_available, None);
+                        return Err(RenderError::Vulkan(e));
+                    }
+                };
                 vk.device
                     .destroy_semaphore(output.image_available_semaphore, None);
                 vk.device

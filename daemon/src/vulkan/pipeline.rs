@@ -8,8 +8,12 @@ use ash::vk;
 
 use super::VulkanError;
 
-/// Maximum number of outputs (monitors) we support simultaneously.
-const MAX_OUTPUTS: u32 = 8;
+/// Descriptor-pool capacity for wallpaper descriptor sets (one per output).
+///
+/// The pool is sized ahead of time and the daemon does not refuse extra
+/// outputs, so this is the practical monitor ceiling for wallpaper rendering:
+/// beyond it, a new output falls back to the solid clear colour.
+const MAX_OUTPUTS: u32 = 32;
 
 /// Push constants passed to the fragment shader for resize calculations.
 #[repr(C)]
