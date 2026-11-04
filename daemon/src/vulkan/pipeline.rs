@@ -34,6 +34,9 @@ pub struct WallpaperPushConstants {
 /// Owns the entire Vulkan pipeline state needed to draw wallpapers.
 pub struct WallpaperPipeline {
     pub render_pass: vk::RenderPass,
+    /// Swapchain format the render pass was created for. Every output must use
+    /// this format to share the render pass and pipelines.
+    pub format: vk::Format,
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     pub pipeline_layout: vk::PipelineLayout,
     pub pipeline: vk::Pipeline,
@@ -67,6 +70,7 @@ impl WallpaperPipeline {
 
         Ok(Self {
             render_pass,
+            format,
             descriptor_set_layout,
             pipeline_layout,
             pipeline,

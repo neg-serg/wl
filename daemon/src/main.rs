@@ -432,6 +432,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             wl.finish_removed_outputs();
         }
 
+        // Outputs that appeared after startup (monitor plugged in) get their
+        // surfaces, swapchains and saved wallpaper here.
+        attach_new_outputs(&mut daemon, &mut wl);
+
         // A mode or scale change updates the Wayland state but nothing recreates
         // the swapchain, so the compositor keeps scaling the stale buffer (a
         // blurry wallpaper) until an unrelated surface loss. Route the change
@@ -1899,6 +1903,192 @@ fn handle_clear(
     }
 
     IpcResponse::Ok
+}
+
+/// Attach Vulkan state for outputs discovered after startup (a monitor was
+/// plugged in).
+///
+/// The layer surface is created first, the compositor's Configure provides the
+/// size, and only then are the swapchain, framebuffers and the output's saved
+/// wallpaper set up. Outputs that are not configured yet are retried on the
+/// next tick.
+fn attach_new_outputs(daemon: &mut DaemonState, wl: &mut WaylandState) {
+    // vk handles are Copy: take them so no borrow of `daemon` stays alive while
+    // the new output's wallpaper is applied below.
+    let (render_pass, pipeline_format) = match daemon.pipeline.as_ref() {
+        Some(pipeline) => (pipeline.render_pass, pipeline.format),
+        None => return,
+    };
+
+    let pending: Vec<usize> = wl
+        .outputs()
+        .iter()
+        .enumerate()
+        .filter(|(index, output)| {
+            !output.removed
+                && !daemon
+                    .outputs
+                    .contains_key(&output_key(output.name.as_deref(), *index))
+        })
+        .map(|(index, _)| index)
+        .collect();
+
+    if pending.is_empty() {
+        return;
+    }
+
+    let mut created_surface = false;
+    for &index in &pending {
+        if wl.outputs()[index].surface.is_none() {
+            match wl.create_layer_surface(index) {
+                Ok(()) => created_surface = true,
+                Err(e) => {
+                    warn!(
+                        output_index = index,
+                        "failed to create layer surface for new output: {e}"
+                    );
+                }
+            }
+        }
+    }
+    if created_surface {
+        // Wait for the compositor's Configure so the swapchain gets a real size.
+        if let Err(e) = wl.roundtrip() {
+            warn!("roundtrip for a new output failed: {e}");
+            return;
+        }
+    }
+
+    let display_ptr = wl.get_display_ptr();
+
+    for &index in &pending {
+        let Some(wl_output) = wl.outputs().get(index) else {
+            continue;
+        };
+        let output_name = output_key(wl_output.name.as_deref(), index);
+        if daemon.outputs.contains_key(&output_name) {
+            continue;
+        }
+        if !wl_output.configured {
+            debug!(output = %output_name, "new output not configured yet, retrying");
+            continue;
+        }
+        let Some(surface_ptr) = wl.get_surface_ptr(index) else {
+            warn!(output = %output_name, "new output has no wl_surface");
+            continue;
+        };
+
+        // SAFETY: device is valid; the output owns its sync objects.
+        let mut output = match unsafe {
+            Output::new(
+                &daemon.vk.device,
+                output_name.clone(),
+                wl_output.width,
+                wl_output.height,
+                wl_output.scale_factor,
+                wl_output.refresh_mhz,
+            )
+        } {
+            Ok(output) => output,
+            Err(e) => {
+                error!(output = %output_name, "failed to create output sync objects: {e}");
+                continue;
+            }
+        };
+
+        // SAFETY: display_ptr and surface_ptr are valid Wayland pointers.
+        let vk_surface = match unsafe {
+            Swapchain::create_surface(
+                &daemon.vk.entry,
+                &daemon.vk.instance,
+                display_ptr,
+                surface_ptr,
+                &daemon.vk.wayland_surface_fn,
+            )
+        } {
+            Ok(surface) => surface,
+            Err(e) => {
+                error!(output = %output_name, "failed to create VkSurface for new output: {e}");
+                continue;
+            }
+        };
+
+        let (eff_w, eff_h) = output.effective_resolution();
+        let swapchain = match Swapchain::new(
+            &daemon.vk.instance,
+            &daemon.vk.device,
+            daemon.vk.physical_device,
+            vk_surface,
+            eff_w.max(1),
+            eff_h.max(1),
+        ) {
+            Ok(swapchain) => swapchain,
+            Err(e) => {
+                error!(output = %output_name, "failed to create swapchain for new output: {e}");
+                continue;
+            }
+        };
+
+        // All outputs share one render pass and one set of pipelines, so the
+        // surface must accept the format they were created for.
+        if swapchain.format.format != pipeline_format {
+            warn!(
+                output = %output_name,
+                swapchain_format = ?swapchain.format.format,
+                pipeline_format = ?pipeline_format,
+                "new output's surface format differs from the shared render pass; skipping"
+            );
+            let mut swapchain = swapchain;
+            swapchain.destroy(&daemon.vk.device);
+            continue;
+        }
+
+        for &view in &swapchain.image_views {
+            match WallpaperPipeline::create_framebuffer(
+                &daemon.vk.device,
+                render_pass,
+                view,
+                swapchain.extent.width,
+                swapchain.extent.height,
+            ) {
+                Ok(framebuffer) => output.framebuffers.push(framebuffer),
+                Err(e) => error!(output = %output_name, "failed to create framebuffer: {e}"),
+            }
+        }
+
+        output.swapchain = Some(swapchain);
+        output.applied_resolution = (eff_w.max(1), eff_h.max(1));
+        output.needs_redraw = true;
+        daemon.outputs.insert(output_name.clone(), output);
+        info!(output = %output_name, "new output attached");
+
+        // Re-apply the wallpaper this output had in the saved session.
+        if let Ok(state) = wl_common::cache::load_session_state()
+            && let Some(saved) = state.outputs.get(&output_name)
+        {
+            let resize = resize_mode_from_str(&saved.resize_mode);
+            let no_transition = TransitionParams::default();
+            let result = handle_img(
+                daemon,
+                &saved.wallpaper_path,
+                Some(vec![output_name.clone()]),
+                resize,
+                &no_transition,
+            );
+            if let IpcResponse::Error { message } = &result {
+                warn!(
+                    output = %output_name,
+                    "failed to restore wallpaper on new output: {message}"
+                );
+            }
+        }
+    }
+}
+
+/// Daemon-side key for an output: the compositor name or the startup fallback.
+fn output_key(name: Option<&str>, index: usize) -> String {
+    name.map(str::to_string)
+        .unwrap_or_else(|| format!("output-{index}"))
 }
 
 fn handle_restore(daemon: &mut DaemonState) -> IpcResponse {
