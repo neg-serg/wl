@@ -18,11 +18,19 @@ pub fn scan_directories(dirs: &[PathBuf]) -> Vec<PathBuf> {
             continue;
         }
 
-        for entry in WalkDir::new(dir)
-            .follow_links(true)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
+        for entry in WalkDir::new(dir).follow_links(true) {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    // Permission denied / unreadable subtree: say so instead of
+                    // silently returning a shorter list than the user expects.
+                    eprintln!(
+                        "Warning: failed to read an entry under '{}': {e}",
+                        dir.display()
+                    );
+                    continue;
+                }
+            };
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -37,4 +45,40 @@ pub fn scan_directories(dirs: &[PathBuf]) -> Vec<PathBuf> {
     }
 
     candidates
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("wl-scan-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn finds_supported_extensions_recursively_and_case_insensitively() {
+        let dir = temp_dir("extensions");
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        std::fs::write(dir.join("a.JPG"), b"x").unwrap();
+        std::fs::write(dir.join("nested/b.png"), b"x").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"x").unwrap();
+        std::fs::write(dir.join("nested/c.webp"), b"x").unwrap();
+
+        let mut found: Vec<String> = scan_directories(std::slice::from_ref(&dir))
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        found.sort();
+
+        assert_eq!(found, vec!["a.JPG", "b.png", "c.webp"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn missing_directories_are_skipped() {
+        let missing = std::env::temp_dir().join("wl-scan-definitely-missing");
+        assert!(scan_directories(&[missing]).is_empty());
+    }
 }

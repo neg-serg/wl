@@ -377,7 +377,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            _ = tokio::time::sleep(std::time::Duration::from_millis(16)) => {}
+            _ = tokio::time::sleep(loop_tick_interval(&daemon)) => {}
         }
 
         // Check if rotation timer has elapsed
@@ -815,6 +815,32 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     info!("daemon stopped");
 
     Ok(())
+}
+
+/// How long the event loop may sleep before its next housekeeping pass.
+///
+/// The loop used to tick at a fixed 16 ms even when a static wallpaper was
+/// fully presented, waking the process ~62 times per second around the clock for
+/// nothing. Animations, transitions, pending redraws and surface recovery need
+/// the fast tick; a static, idle daemon only needs to service Wayland events and
+/// the rotation timer, which are fine at 10 Hz (IPC accept wakes the loop from
+/// the socket, so command latency is unaffected).
+fn loop_tick_interval(daemon: &DaemonState) -> std::time::Duration {
+    let busy = daemon.outputs.values().any(|output| {
+        output.needs_redraw
+            || output.transition.is_some()
+            || output.surface_lost
+            || output
+                .animation
+                .as_ref()
+                .is_some_and(|animation| !animation.paused && animation.frame_count > 1)
+    });
+
+    if busy {
+        std::time::Duration::from_millis(16)
+    } else {
+        std::time::Duration::from_millis(100)
+    }
 }
 
 /// Current resident set size of this process in bytes (Linux).

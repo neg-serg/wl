@@ -15,7 +15,7 @@ pub async fn init() -> Result<(), String> {
     // Spawn the daemon binary
     let daemon_bin = find_daemon_binary()?;
 
-    let _child = Command::new(&daemon_bin)
+    let mut child = Command::new(&daemon_bin)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit())
@@ -32,6 +32,19 @@ pub async fn init() -> Result<(), String> {
         }
 
         tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // A daemon that dies immediately (missing Wayland/Vulkan, another
+        // instance) will never create the socket; report that instead of
+        // waiting out the full timeout.
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "daemon exited during startup with {status}; see the messages above"
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => return Err(format!("failed to check daemon status: {e}")),
+        }
 
         if IpcClient::connect().await.is_ok() {
             return Ok(());
