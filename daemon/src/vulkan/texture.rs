@@ -1038,6 +1038,168 @@ mod tests {
         }
     }
 
+    /// End-to-end GPU check of the GIF atlas upload: two distinct frames must
+    /// land in two distinct atlas tiles. This is the regression the streaming
+    /// upload introduced (one submit reading a single reused staging offset
+    /// stored the last frame in every tile).
+    ///
+    /// Ignored by default: it needs a live Wayland session and a Vulkan device.
+    /// Run with `cargo test -p wl-daemon -- --ignored gif_atlas_tiles`.
+    #[test]
+    #[ignore = "needs a Wayland session and a Vulkan device"]
+    fn gif_atlas_tiles_receive_distinct_frames_on_gpu() {
+        use super::{GifAtlasPlan, upload_gif_atlas};
+        use crate::vulkan::VulkanContext;
+
+        const FRAME_W: u32 = 4;
+        const FRAME_H: u32 = 4;
+
+        let wayland = crate::wayland::WaylandState::connect().expect("connect to Wayland");
+        // SAFETY: the display pointer belongs to a live connection that the
+        // Wayland state keeps alive for the duration of the test.
+        let vk = unsafe { VulkanContext::new(wayland.get_display_ptr()) }.expect("Vulkan context");
+
+        let red = [255u8, 0, 0, 255];
+        let green = [0u8, 255, 0, 255];
+        let frames: Vec<Vec<u8>> = [red, green]
+            .iter()
+            .map(|pixel| {
+                pixel
+                    .iter()
+                    .copied()
+                    .cycle()
+                    .take((FRAME_W * FRAME_H * 4) as usize)
+                    .collect()
+            })
+            .collect();
+
+        let plan = GifAtlasPlan {
+            kept_indices: vec![0, 1],
+            atlas_width: FRAME_W * 2,
+            atlas_height: FRAME_H,
+        };
+
+        let texture = upload_gif_atlas(&vk, &plan, FRAME_W, FRAME_H, |index| {
+            Ok(frames[index].clone())
+        })
+        .expect("upload atlas");
+
+        // Read the whole atlas back into a host-visible buffer.
+        let atlas_bytes = (plan.atlas_width * plan.atlas_height * 4) as u64;
+        let buffer_info = ash::vk::BufferCreateInfo::default()
+            .size(atlas_bytes)
+            .usage(ash::vk::BufferUsageFlags::TRANSFER_DST)
+            .sharing_mode(ash::vk::SharingMode::EXCLUSIVE);
+
+        // SAFETY: device is valid and the buffer info is fully initialized.
+        unsafe {
+            let buffer = vk
+                .device
+                .create_buffer(&buffer_info, None)
+                .expect("readback buffer");
+            let requirements = vk.device.get_buffer_memory_requirements(buffer);
+            let memory_type = vk
+                .find_memory_type(
+                    requirements.memory_type_bits,
+                    ash::vk::MemoryPropertyFlags::HOST_VISIBLE
+                        | ash::vk::MemoryPropertyFlags::HOST_COHERENT,
+                )
+                .expect("host-visible memory");
+            let alloc = ash::vk::MemoryAllocateInfo::default()
+                .allocation_size(requirements.size)
+                .memory_type_index(memory_type);
+            let memory = vk
+                .device
+                .allocate_memory(&alloc, None)
+                .expect("readback memory");
+            vk.device
+                .bind_buffer_memory(buffer, memory, 0)
+                .expect("bind readback");
+
+            let cmd = vk.begin_single_time_commands().expect("command buffer");
+
+            let to_transfer = ash::vk::ImageMemoryBarrier::default()
+                .src_access_mask(ash::vk::AccessFlags::SHADER_READ)
+                .dst_access_mask(ash::vk::AccessFlags::TRANSFER_READ)
+                .old_layout(ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .new_layout(ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .src_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
+                .image(texture.image)
+                .subresource_range(ash::vk::ImageSubresourceRange {
+                    aspect_mask: ash::vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+
+            vk.device.cmd_pipeline_barrier(
+                cmd,
+                ash::vk::PipelineStageFlags::FRAGMENT_SHADER,
+                ash::vk::PipelineStageFlags::TRANSFER,
+                ash::vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_transfer],
+            );
+
+            let region = ash::vk::BufferImageCopy {
+                buffer_offset: 0,
+                buffer_row_length: 0,
+                buffer_image_height: 0,
+                image_subresource: ash::vk::ImageSubresourceLayers {
+                    aspect_mask: ash::vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                image_offset: ash::vk::Offset3D { x: 0, y: 0, z: 0 },
+                image_extent: ash::vk::Extent3D {
+                    width: plan.atlas_width,
+                    height: plan.atlas_height,
+                    depth: 1,
+                },
+            };
+
+            vk.device.cmd_copy_image_to_buffer(
+                cmd,
+                texture.image,
+                ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                buffer,
+                &[region],
+            );
+
+            vk.end_single_time_commands(cmd).expect("submit readback");
+
+            let mapped = vk
+                .device
+                .map_memory(
+                    memory,
+                    0,
+                    ash::vk::WHOLE_SIZE,
+                    ash::vk::MemoryMapFlags::empty(),
+                )
+                .expect("map readback") as *const u8;
+
+            let pixels = std::slice::from_raw_parts(mapped, atlas_bytes as usize);
+            let tile0 = &pixels[0..4];
+            let tile1 = &pixels[(FRAME_W * 4) as usize..(FRAME_W * 4) as usize + 4];
+
+            assert_eq!(tile0, red, "first atlas tile does not hold frame 0");
+            assert_eq!(tile1, green, "second atlas tile does not hold frame 1");
+
+            vk.device.unmap_memory(memory);
+            vk.device.destroy_buffer(buffer, None);
+            vk.device.free_memory(memory, None);
+        }
+
+        let mut texture = texture;
+        // SAFETY: the GPU is idle (single-time submissions waited) and the
+        // test owns the texture.
+        unsafe { texture.destroy(&vk.device) };
+    }
+
     #[test]
     fn every_frame_in_a_chunk_gets_its_own_buffer_offset() {
         // Replays the upload loop's addressing: frames inside one submitted
