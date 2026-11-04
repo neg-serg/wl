@@ -167,7 +167,11 @@ async fn run(cli: Cli) -> Result<(), String> {
                                 format!("[playing frame {frame}/{total}]")
                             }
                         };
-                        println!("{}: {path} {dims} {state}", info.name);
+                        let physical = info
+                            .physical_resolution
+                            .map(|(w, h)| format!(" phys={w}x{h}"))
+                            .unwrap_or_default();
+                        println!("{}: {path} {dims}{physical} {state}", info.name);
                     }
                     Ok(())
                 }
