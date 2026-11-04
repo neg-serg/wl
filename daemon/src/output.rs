@@ -12,6 +12,10 @@ pub struct Output {
     pub height: u32,
     pub scale_factor: f64,
     pub refresh_rate_mhz: u32,
+    /// Effective resolution the current swapchain was built for. Compared with
+    /// [`Self::effective_resolution`] to notice mode/scale changes that do not
+    /// produce an event the swapchain logic reacts to.
+    pub applied_resolution: (u32, u32),
 
     // Vulkan resources
     pub swapchain: Option<Swapchain>,
@@ -145,12 +149,18 @@ impl Output {
         let render_finished_semaphore = unsafe { device.create_semaphore(&semaphore_info, None)? };
         let in_flight_fence = unsafe { device.create_fence(&fence_info, None)? };
 
+        let applied_resolution = (
+            (width as f64 * scale_factor).round() as u32,
+            (height as f64 * scale_factor).round() as u32,
+        );
+
         Ok(Self {
             name,
             width,
             height,
             scale_factor,
             refresh_rate_mhz,
+            applied_resolution,
             swapchain: None,
             wallpaper: None,
             transition: None,

@@ -158,6 +158,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             swapchain_format = Some(swapchain.format.format);
             output.swapchain = Some(swapchain);
+            output.applied_resolution = (eff_w.max(1), eff_h.max(1));
             info!(name = %output.name, "output initialized with swapchain");
         }
 
@@ -410,6 +411,30 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
+        // A mode or scale change updates the Wayland state but nothing recreates
+        // the swapchain, so the compositor keeps scaling the stale buffer (a
+        // blurry wallpaper) until an unrelated surface loss. Route the change
+        // through the same full recovery path used for lost surfaces, and record
+        // the requested resolution so a clamped extent cannot loop forever.
+        for output in daemon.outputs.values_mut() {
+            if output.swapchain.is_none() || output.surface_lost {
+                continue;
+            }
+            let requested = output.effective_resolution();
+            if requested != output.applied_resolution {
+                warn!(
+                    output = %output.name,
+                    old_w = output.applied_resolution.0,
+                    old_h = output.applied_resolution.1,
+                    new_w = requested.0,
+                    new_h = requested.1,
+                    "output resolution changed, rebuilding the surface"
+                );
+                output.surface_lost = true;
+                output.needs_redraw = true;
+            }
+        }
+
         // Sync VK_ERROR_SURFACE_LOST_KHR from the daemon side to the Wayland side.
         // When the Vulkan renderer detects a lost surface (screen off/on, driver
         // invalidation), it sets `output.surface_lost` on the daemon Output. Here
@@ -589,6 +614,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 output.swapchain = Some(swapchain);
+                output.applied_resolution = (eff_w.max(1), eff_h.max(1));
                 output.needs_redraw = true;
 
                 // Re-bind wallpaper descriptor set to ensure texture is displayed.
@@ -660,6 +686,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                             )
                         }) {
                             Some(Ok(())) => {
+                                output.applied_resolution = (eff_w.max(1), eff_h.max(1));
                                 let sc = output.swapchain.as_ref().unwrap();
                                 if let Some(ref pipeline) = daemon.pipeline {
                                     for &view in &sc.image_views {
@@ -908,6 +935,7 @@ fn rebuild_output_surfaces(daemon: &mut DaemonState, wl: &mut WaylandState) {
         }
 
         output.swapchain = Some(swapchain);
+        output.applied_resolution = (eff_w.max(1), eff_h.max(1));
         output.needs_redraw = true;
 
         if let (Some(ds), Some(pipeline), Some(wp)) =
