@@ -523,8 +523,7 @@ pub fn upload_gif_atlas(
     let atlas_width = plan.atlas_width;
     let atlas_height = plan.atlas_height;
 
-    let frames_per_chunk = (ATLAS_STAGING_BUDGET_BYTES / frame_bytes.max(1))
-        .clamp(1, plan.kept_indices.len().max(1));
+    let frames_per_chunk = staging_frames_per_chunk(frame_bytes, plan.kept_indices.len());
     let staging_bytes = frame_bytes * frames_per_chunk;
 
     tracing::debug!(
@@ -750,6 +749,14 @@ pub fn upload_gif_atlas(
         width: atlas_width,
         height: atlas_height,
     })
+}
+
+/// How many frames share one staging chunk (and therefore one submit).
+///
+/// Bounded by the host staging budget and by the number of kept frames; a frame
+/// larger than the budget is uploaded alone rather than rejected.
+fn staging_frames_per_chunk(frame_bytes: usize, total_frames: usize) -> usize {
+    (ATLAS_STAGING_BUDGET_BYTES / frame_bytes.max(1)).clamp(1, total_frames.max(1))
 }
 
 /// Record and submit the chunked staging copies of a GIF atlas.
@@ -981,7 +988,7 @@ pub fn create_sampler(vk: &VulkanContext) -> Result<vk::Sampler, VulkanError> {
 
 #[cfg(test)]
 mod tests {
-    use super::select_atlas_frames;
+    use super::{ATLAS_STAGING_BUDGET_BYTES, select_atlas_frames, staging_frames_per_chunk};
 
     #[test]
     fn keeps_all_frames_when_they_fit() {
@@ -1020,3 +1027,28 @@ mod tests {
         }
     }
 }
+
+    #[test]
+    fn staging_chunks_fit_the_budget_and_never_go_empty() {
+        // A frame larger than the budget is staged alone (no zero-sized chunk).
+        assert_eq!(
+            staging_frames_per_chunk(ATLAS_STAGING_BUDGET_BYTES * 2, 10),
+            1
+        );
+        // Small frames are capped by the number of frames, not by the budget.
+        assert_eq!(staging_frames_per_chunk(16, 3), 3);
+        // The whole chunk fits the staging buffer: this is what lets every
+        // frame inside one submit read a distinct offset.
+        for frame_bytes in [16usize, 1024, 64 * 1024, 1024 * 1024] {
+            let per_chunk = staging_frames_per_chunk(frame_bytes, 10_000);
+            assert!(
+                per_chunk <= 10_000,
+                "chunk {per_chunk} exceeds frame count"
+            );
+            assert!(
+                per_chunk.saturating_mul(frame_bytes) <= ATLAS_STAGING_BUDGET_BYTES
+                    || per_chunk == 1,
+                "chunk {per_chunk} x {frame_bytes} overflows the staging budget"
+            );
+        }
+    }
