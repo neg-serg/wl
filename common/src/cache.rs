@@ -91,6 +91,37 @@ pub fn socket_path() -> PathBuf {
     PathBuf::from("/tmp").join(SOCKET_NAME)
 }
 
+/// Write `contents` to `path` atomically: write a sibling temporary file, sync
+/// it, then rename it over the target.
+///
+/// A crash or power loss in the middle of a plain `fs::write` leaves a truncated
+/// JSON file that the next start cannot parse (restore then fails, rotation
+/// state is silently dropped). Rename within the same directory is atomic on
+/// POSIX, so readers only ever see the old or the new file.
+fn write_atomic(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "state".to_string());
+    let tmp = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+
+    let result = (|| {
+        {
+            let mut file = std::fs::File::create(&tmp)?;
+            file.write_all(contents)?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&tmp, path)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 // ---------------------------------------------------------------------------
 // Session persistence
 // ---------------------------------------------------------------------------
@@ -121,7 +152,7 @@ pub fn save_session_state(state: &SessionState) -> Result<(), std::io::Error> {
     let path = dir.join(STATE_FILE);
     let json = serde_json::to_string_pretty(state)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(&path, json)
+    write_atomic(&path, json.as_bytes())
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +274,7 @@ pub fn save_upscale_index(index: &UpscaleCacheIndex) -> Result<(), std::io::Erro
     let path = dir.join(UPSCALE_INDEX);
     let json = serde_json::to_string_pretty(index)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(&path, json)
+    write_atomic(&path, json.as_bytes())
 }
 
 // ---------------------------------------------------------------------------
@@ -277,7 +308,7 @@ pub fn save_upscale_prefs(prefs: &UpscalePrefs) -> Result<(), std::io::Error> {
     let path = dir.join(UPSCALE_PREFS_FILE);
     let json = serde_json::to_string_pretty(prefs)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(&path, json)
+    write_atomic(&path, json.as_bytes())
 }
 
 // ---------------------------------------------------------------------------
@@ -324,11 +355,42 @@ pub fn save_rotation_state(state: &RotationPersist) -> Result<(), std::io::Error
     let path = dir.join(ROTATION_STATE_FILE);
     let json = serde_json::to_string_pretty(state)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(&path, json)
+    write_atomic(&path, json.as_bytes())
 }
 
 /// Delete rotation state file from disk.
 pub fn delete_rotation_state() {
     let path = state_dir().join(ROTATION_STATE_FILE);
     let _ = std::fs::remove_file(path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_atomic;
+
+    #[test]
+    fn write_atomic_replaces_content_and_leaves_no_temp_file() {
+        let dir = std::env::temp_dir().join(format!("wl-cache-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+
+        std::fs::write(&path, b"old-not-json").unwrap();
+        write_atomic(&path, b"{\"new\":true}").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"{\"new\":true}");
+        let temps = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            })
+            .count();
+        assert_eq!(temps, 0, "a temporary file was left behind");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
