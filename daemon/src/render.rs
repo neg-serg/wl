@@ -220,21 +220,34 @@ pub unsafe fn render_frame(
         .command_buffers(&command_buffers)
         .signal_semaphores(&signal_semaphores);
 
-    // SAFETY: All handles valid. Reset fence just before submit so that any failure
-    // before this point leaves the fence signaled (preventing deadlock on next frame).
+    // A fresh fence per submit: the previous one is signalled (we waited for it
+    // at the top of this function) and a failed submit leaves it untouched, so
+    // the next frame can never block forever on a fence that nothing will
+    // signal.
+    // SAFETY: All handles valid. The new fence is unsignalled until the submit.
     unsafe {
-        vk.device
-            .reset_fences(&[output.in_flight_fence])
-            .map_err(|e| {
+        let fence_info = vk::FenceCreateInfo::default();
+        let new_fence = match vk.device.create_fence(&fence_info, None) {
+            Ok(fence) => fence,
+            Err(e) => {
                 vk.device.free_command_buffers(vk.command_pool, &[cmd]);
-                RenderError::Vulkan(e)
-            })?;
-        if let Err(e) =
-            vk.device
-                .queue_submit(vk.graphics_queue, &[submit_info], output.in_flight_fence)
+                return Err(RenderError::Vulkan(e));
+            }
+        };
+
+        match vk
+            .device
+            .queue_submit(vk.graphics_queue, &[submit_info], new_fence)
         {
-            vk.device.free_command_buffers(vk.command_pool, &[cmd]);
-            return Err(RenderError::Vulkan(e));
+            Ok(()) => {
+                vk.device.destroy_fence(output.in_flight_fence, None);
+                output.in_flight_fence = new_fence;
+            }
+            Err(e) => {
+                vk.device.destroy_fence(new_fence, None);
+                vk.device.free_command_buffers(vk.command_pool, &[cmd]);
+                return Err(RenderError::Vulkan(e));
+            }
         }
     }
 
@@ -250,12 +263,38 @@ pub unsafe fn render_frame(
         }
         Ok(_) => {}
         Err(result @ (vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR)) => {
-            // The frame was not presented. The command buffer is still in flight,
-            // so park it for the next fence wait instead of freeing it here, and
-            // let the main loop rebuild the swapchain. Replaying the same failing
-            // present on every tick is what kept the daemon busy forever.
+            // The frame was not presented. The submit that rendered into the
+            // swapchain image may still be running and the present never waited
+            // for `render_finished_semaphore`, so idle the GPU before the caller
+            // rebuilds the swapchain, then discard the semaphores instead of
+            // re-signalling an already signalled handle.
             debug!(?result, "present failed, recreating the swapchain");
-            output.last_command_buffer = Some(cmd);
+            // SAFETY: All handles are valid; we wait for the GPU before freeing.
+            unsafe {
+                let _ = vk.device.device_wait_idle();
+                vk.device.free_command_buffers(vk.command_pool, &[cmd]);
+
+                let semaphore_info = vk::SemaphoreCreateInfo::default();
+                let new_image_available =
+                    match vk.device.create_semaphore(&semaphore_info, None) {
+                        Ok(semaphore) => semaphore,
+                        Err(e) => return Err(RenderError::Vulkan(e)),
+                    };
+                let new_render_finished =
+                    match vk.device.create_semaphore(&semaphore_info, None) {
+                        Ok(semaphore) => semaphore,
+                        Err(e) => {
+                            vk.device.destroy_semaphore(new_image_available, None);
+                            return Err(RenderError::Vulkan(e));
+                        }
+                    };
+                vk.device
+                    .destroy_semaphore(output.image_available_semaphore, None);
+                vk.device
+                    .destroy_semaphore(output.render_finished_semaphore, None);
+                output.image_available_semaphore = new_image_available;
+                output.render_finished_semaphore = new_render_finished;
+            }
             return Err(RenderError::NeedsRecreate);
         }
         Err(e) => return Err(RenderError::Vulkan(e)),

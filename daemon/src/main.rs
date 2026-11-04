@@ -614,12 +614,24 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     if matches!(e, render::RenderError::NeedsRecreate) {
                         warn!(output = %output.name, "swapchain out of date, recreating");
                         let (eff_w, eff_h) = output.effective_resolution();
+                        // `recreate` destroys the old swapchain image views, so the
+                        // GPU must be idle and the framebuffers referencing them must
+                        // be destroyed first (they used to be dropped with `clear`,
+                        // leaking one VkFramebuffer per resize and leaving dangling
+                        // attachments if the rebuild failed halfway).
+                        // SAFETY: this output owns the handles; the wait makes sure no
+                        // submission still references them.
+                        unsafe {
+                            let _ = daemon.vk.device.device_wait_idle();
+                            for fb in output.framebuffers.drain(..) {
+                                daemon.vk.device.destroy_framebuffer(fb, None);
+                            }
+                        }
                         match output.swapchain.as_mut().map(|sc| {
                             sc.recreate(&daemon.vk.device, daemon.vk.physical_device, eff_w.max(1), eff_h.max(1))
                         }) {
                             Some(Ok(())) => {
                                 let sc = output.swapchain.as_ref().unwrap();
-                                output.framebuffers.clear();
                                 if let Some(ref pipeline) = daemon.pipeline {
                                     for &view in &sc.image_views {
                                         match WallpaperPipeline::create_framebuffer(
@@ -640,6 +652,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             Some(Err(e)) => {
                                 error!(output = %output.name, "failed to recreate swapchain: {e}");
+                                // The swapchain is in an unknown state (its image
+                                // views may already be gone); escalate to a full
+                                // surface + swapchain rebuild instead of retrying
+                                // in place.
+                                output.surface_lost = true;
                                 output.needs_redraw = true;
                             }
                             None => {
@@ -942,30 +959,24 @@ fn tick_transitions(daemon: &mut DaemonState) {
 
 /// Complete a transition: free old texture, wallpaper already has the new texture handles.
 fn complete_transition(daemon: &mut DaemonState, output_name: &str) {
-    let output = match daemon.outputs.get_mut(output_name) {
-        Some(o) => o,
-        None => return,
+    let Some(output) = daemon.outputs.get_mut(output_name) else {
+        return;
     };
-
-    let t = match output.transition.take() {
-        Some(t) => t,
-        None => return,
-    };
+    if output.transition.is_none() {
+        return;
+    }
 
     // SAFETY: GPU idle ensured by fence wait in render loop.
     unsafe {
         let _ = daemon.vk.device.device_wait_idle();
-        // Only destroy the old texture. The new texture's handles are shared
-        // with output.wallpaper.texture (set during transition start).
-        // GpuTexture has no Drop impl, so just not calling destroy() is safe.
-        t.old_texture.destroy(&daemon.vk.device);
-        // Free the transition descriptor set back to the pool.
-        if let Some(ds) = t.descriptor_set
-            && let Some(ref tp) = daemon.transition_pipeline
-        {
-            tp.free_descriptor_set(&daemon.vk.device, ds);
-        }
     }
+    // Only the old texture is freed: the new one is shared with
+    // output.wallpaper.texture (set when the transition started).
+    cancel_transition(
+        &daemon.vk,
+        daemon.transition_pipeline.as_ref(),
+        output,
+    );
 
     // Update descriptor set to point to the wallpaper's texture (which has new_texture's handles)
     if let (Some(ds), Some(pipeline), Some(wp)) =
@@ -980,6 +991,31 @@ fn complete_transition(daemon: &mut DaemonState, output_name: &str) {
     }
 
     output.needs_redraw = true;
+}
+
+/// Drop an in-flight transition, freeing the textures and descriptor set it
+/// owns. The texture it transitions *to* is shared with `output.wallpaper`, so
+/// only `old_texture` is destroyed here.
+///
+/// Callers must guarantee the GPU is idle (all call sites wait first or are
+/// about to destroy the output anyway).
+fn cancel_transition(
+    vk: &VulkanContext,
+    transition_pipeline: Option<&TransitionPipeline>,
+    output: &mut Output,
+) {
+    let Some(mut transition) = output.transition.take() else {
+        return;
+    };
+    // SAFETY: Caller guarantees the GPU does not reference these resources.
+    unsafe {
+        transition.old_texture.destroy(&vk.device);
+        if let Some(ds) = transition.descriptor_set
+            && let Some(tp) = transition_pipeline
+        {
+            tp.free_descriptor_set(&vk.device, ds);
+        }
+    }
 }
 
 /// Tick all active animations, requesting redraw when frame changes.
@@ -1361,34 +1397,35 @@ fn handle_img(
                     frame_h,
                 );
 
-                // Create a wallpaper entry pointing to the atlas
+                // The atlas is owned by the animation state; the wallpaper entry
+                // only mirrors its dimensions. Null handles mark "not owned", so
+                // the common teardown cannot destroy the atlas twice.
                 let wallpaper = Wallpaper {
                     source_path: path.to_string(),
                     format: ImageFormat::Gif,
                     original_dimensions: (original_w, original_h),
                     display_dimensions: (frame_w, frame_h),
                     resize_mode: resize,
-                    // The atlas texture is owned by the animation state.
-                    // Use a copy of the handles for the wallpaper.
                     texture: output::GpuTexture {
-                        image: anim_state.atlas.image,
-                        view: anim_state.atlas.view,
-                        memory: anim_state.atlas.memory,
+                        image: ash::vk::Image::null(),
+                        view: ash::vk::ImageView::null(),
+                        memory: ash::vk::DeviceMemory::null(),
                         width: anim_state.atlas.width,
                         height: anim_state.atlas.height,
                     },
                     is_animated: true,
                 };
 
-                // SAFETY: GPU is idle.
+                // A transition started from the previous wallpaper references
+                // textures that the teardown below is about to free.
+                cancel_transition(&daemon.vk, daemon.transition_pipeline.as_ref(), output);
+
+                // SAFETY: GPU is idle (waited at the top of handle_img).
                 unsafe {
-                    // Clear old wallpaper texture (if not animated - if animated, animation owns it)
-                    if let Some(old_wp) = output.wallpaper.take()
-                        && output.animation.is_none()
-                    {
+                    if let Some(mut old_wp) = output.wallpaper.take() {
                         old_wp.texture.destroy(&daemon.vk.device);
                     }
-                    if let Some(old_anim) = output.animation.take() {
+                    if let Some(mut old_anim) = output.animation.take() {
                         old_anim.atlas.destroy(&daemon.vk.device);
                     }
                 }
@@ -1572,27 +1609,32 @@ fn set_static_wallpaper(
                 // Cancel any existing transition: free its old texture and descriptor set.
                 // The existing transition's new_texture handles are shared with
                 // output.wallpaper.texture, so we must NOT destroy new_texture here.
-                if let Some(old_transition) = output.transition.take() {
-                    // SAFETY: GPU is idle (device_wait_idle called above).
-                    unsafe {
-                        old_transition.old_texture.destroy(&daemon.vk.device);
-                        if let Some(ds) = old_transition.descriptor_set
-                            && let Some(ref tp) = daemon.transition_pipeline
-                        {
-                            tp.free_descriptor_set(&daemon.vk.device, ds);
+                // Cancel any transition still running: it references textures
+                // that are about to be replaced.
+                cancel_transition(&daemon.vk, daemon.transition_pipeline.as_ref(), output);
+
+                // Take ownership of whatever currently draws: a static
+                // wallpaper texture, or the atlas of an animated wallpaper
+                // (the wallpaper entry only mirrors its dimensions).
+                let old_resize_mode = output.wallpaper.as_ref().unwrap().resize_mode;
+                let old_texture = match output.animation.take() {
+                    Some(anim) => output::GpuTexture {
+                        image: anim.atlas.image,
+                        view: anim.atlas.view,
+                        memory: anim.atlas.memory,
+                        width: anim.atlas.width,
+                        height: anim.atlas.height,
+                    },
+                    None => {
+                        let old_wp = output.wallpaper.as_ref().unwrap();
+                        output::GpuTexture {
+                            image: old_wp.texture.image,
+                            view: old_wp.texture.view,
+                            memory: old_wp.texture.memory,
+                            width: old_wp.texture.width,
+                            height: old_wp.texture.height,
                         }
                     }
-                }
-
-                // Steal old wallpaper texture handles for the transition
-                let old_wp = output.wallpaper.as_ref().unwrap();
-                let old_resize_mode = old_wp.resize_mode;
-                let old_texture = output::GpuTexture {
-                    image: old_wp.texture.image,
-                    view: old_wp.texture.view,
-                    memory: old_wp.texture.memory,
-                    width: old_wp.texture.width,
-                    height: old_wp.texture.height,
                 };
 
                 let mut t = transition::create_transition(
@@ -1642,9 +1684,8 @@ fn set_static_wallpaper(
                     is_animated: false,
                 };
 
-                // Clear animation state. Do NOT destroy the atlas here —
-                // its handles are now owned by transition.old_texture and
-                // will be freed in complete_transition().
+                // The animation (if any) was moved into transition.old_texture
+                // above; it is freed in complete_transition().
                 output.animation = None;
 
                 output.wallpaper = Some(new_wallpaper);
@@ -1686,6 +1727,9 @@ fn set_static_wallpaper(
                     is_animated: false,
                 };
 
+                // A running transition references the texture that
+                // set_wallpaper is about to free.
+                cancel_transition(&daemon.vk, daemon.transition_pipeline.as_ref(), output);
                 // SAFETY: GPU is idle (waited above), old texture safe to free.
                 unsafe {
                     output.set_wallpaper(&daemon.vk.device, wallpaper);
@@ -1720,17 +1764,9 @@ fn handle_clear(
             // SAFETY: device_wait_idle ensures no GPU work references the old texture.
             unsafe {
                 let _ = daemon.vk.device.device_wait_idle();
-                // Cancel any active transition.
-                // Only destroy old_texture here — new_texture shares handles with
-                // output.wallpaper.texture, which clear_wallpaper will destroy.
-                if let Some(t) = output.transition.take() {
-                    t.old_texture.destroy(&daemon.vk.device);
-                    if let Some(ds) = t.descriptor_set
-                        && let Some(ref tp) = daemon.transition_pipeline
-                    {
-                        tp.free_descriptor_set(&daemon.vk.device, ds);
-                    }
-                }
+                // Cancel any active transition; its "new" texture is shared with
+                // output.wallpaper and is freed by clear_wallpaper below.
+                cancel_transition(&daemon.vk, daemon.transition_pipeline.as_ref(), output);
                 output.clear_wallpaper(&daemon.vk.device);
             }
             output.clear_color = clear_color;
