@@ -380,16 +380,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             _ = tokio::time::sleep(loop_tick_interval(&daemon)) => {}
         }
 
-        // Check if rotation timer has elapsed
+        // Rotation ticks every loop iteration: besides the timer, it polls a
+        // background upscale that may have finished.
         if daemon.rotation.is_some() {
-            let elapsed = daemon
-                .rotation
-                .as_ref()
-                .map(|r| r.time_until_next().is_zero())
-                .unwrap_or(false);
-            if elapsed {
-                tick_rotation(&mut daemon);
-            }
+            tick_rotation(&mut daemon);
         }
 
         if let Err(e) = wl.dispatch_pending() {
@@ -1157,41 +1151,214 @@ fn tick_animations(daemon: &mut DaemonState) {
     }
 }
 
-/// Tick rotation: advance to next wallpaper when the timer elapses.
-fn tick_rotation(daemon: &mut DaemonState) {
-    let (path, resize, transition) = {
-        let rot = match daemon.rotation.as_mut() {
-            Some(r) => r,
-            None => return,
-        };
+/// Settings needed to apply a rotation image, copied out of the rotation state
+/// so `handle_img` can take `&mut daemon` without borrow conflicts.
+#[derive(Clone)]
+struct RotationApply {
+    resize: ResizeMode,
+    transition: TransitionParams,
+    no_notify: bool,
+    notify_path: std::path::PathBuf,
+}
 
-        let path = match rot.next_image() {
-            Some(p) => p,
-            None => {
-                warn!("rotation: no images available");
-                rot.reset_timer();
-                return;
+impl RotationApply {
+    fn from_rotation(rotation: &rotation::RotationState) -> Self {
+        Self {
+            resize: rotation.resize,
+            transition: rotation.transition,
+            no_notify: rotation.no_notify,
+            notify_path: rotation.notify_path.clone(),
+        }
+    }
+}
+
+/// Whether rotation is configured to upscale the images it picks.
+fn rotation_wants_upscale(rotation: &rotation::RotationState) -> bool {
+    match rotation.upscale_mode.as_deref() {
+        Some("never") | Some("off") => return false,
+        Some("always") | Some("once") => return true,
+        _ => {}
+    }
+    rotation.upscale_cmd.is_some() || rotation.upscale_scale.is_some()
+}
+
+/// Largest effective resolution among the outputs: the upscale target.
+fn max_output_resolution(outputs: &std::collections::HashMap<String, Output>) -> (u32, u32) {
+    outputs
+        .values()
+        .map(|output| output.effective_resolution())
+        .fold((0, 0), |best, dims| {
+            let best_area = u64::from(best.0) * u64::from(best.1);
+            let dims_area = u64::from(dims.0) * u64::from(dims.1);
+            if dims_area > best_area { dims } else { best }
+        })
+}
+
+/// Run the upscaler for the next rotation image on a worker thread.
+///
+/// The event loop keeps rendering while the upscaler runs; the result is picked
+/// up by [`tick_rotation`] on a later tick.
+fn spawn_rotation_upscale(
+    rotation: &mut rotation::RotationState,
+    path: std::path::PathBuf,
+    target: (u32, u32),
+) -> std::io::Result<()> {
+    let pending = rotation::PendingUpscale::new(path.clone());
+    let slot = pending.result_slot();
+    let source = path.clone();
+    let custom_cmd = rotation.upscale_cmd.clone();
+    let forced_scale = rotation.upscale_scale;
+
+    std::thread::Builder::new()
+        .name("wl-upscale".to_string())
+        .spawn(move || {
+            let options = wl_common::upscale::UpscaleOptions {
+                custom_cmd: custom_cmd.as_deref(),
+                forced_scale,
+                target,
+            };
+            let result = wl_common::upscale::upscale_source(&source, &options);
+            if let Ok(mut slot) = slot.lock() {
+                *slot = Some(result);
             }
-        };
+        })?;
 
-        let resize = rot.resize;
-        let transition = rot.transition;
-        rot.reset_timer();
-        rot.save();
-        (path, resize, transition)
-    };
+    info!(source = %path.display(), "rotation: upscaling the next wallpaper in the background");
+    rotation.pending_upscale = Some(pending);
+    Ok(())
+}
 
+fn apply_rotation_wallpaper(
+    daemon: &mut DaemonState,
+    path: &std::path::Path,
+    apply: &RotationApply,
+) {
     let path_str = path.to_string_lossy().to_string();
-    let result = handle_img(daemon, &path_str, None, resize, &transition);
-    if let IpcResponse::Error { ref message } = result {
+    let result = handle_img(daemon, &path_str, None, apply.resize, &apply.transition);
+    if let IpcResponse::Error { message } = result {
         warn!("rotation: failed to set wallpaper: {message}");
     } else {
         info!(path = %path_str, "rotation: wallpaper changed");
-        if let Some(ref rot) = daemon.rotation
-            && !rot.no_notify
-        {
-            write_notify_file(&path, &rot.notify_path);
+        if !apply.no_notify {
+            write_notify_file(path, &apply.notify_path);
         }
+    }
+}
+
+/// Tick rotation: finish a background upscale, or advance to the next image
+/// when the timer elapses.
+fn tick_rotation(daemon: &mut DaemonState) {
+    enum Decision {
+        Wait,
+        Apply {
+            path: std::path::PathBuf,
+            apply: RotationApply,
+        },
+    }
+
+    let decision = {
+        let Some(rotation) = daemon.rotation.as_mut() else {
+            return;
+        };
+
+        // 1. Did the background upscale finish?
+        let finished = rotation.pending_upscale.as_mut().and_then(|pending| {
+            pending.take_result().map(|result| {
+                let source = pending.source.clone();
+                let elapsed = pending.started.elapsed();
+                (source, result, elapsed)
+            })
+        });
+
+        if let Some((source, result, elapsed)) = finished {
+            rotation.pending_upscale = None;
+            let display = match result {
+                Ok(wl_common::upscale::UpscaleOutcome::Upscaled {
+                    path,
+                    cached,
+                    elapsed: worker_elapsed,
+                    result_dimensions,
+                    scale,
+                }) => {
+                    info!(
+                        source = %source.display(),
+                        out = %path.display(),
+                        scale,
+                        cached,
+                        upscaled_in_ms = worker_elapsed.as_millis(),
+                        result_w = result_dimensions.0,
+                        result_h = result_dimensions.1,
+                        "rotation: upscaled wallpaper ready"
+                    );
+                    path
+                }
+                Ok(wl_common::upscale::UpscaleOutcome::Skipped { reason }) => {
+                    debug!(
+                        source = %source.display(),
+                        %reason,
+                        waited_ms = elapsed.as_millis(),
+                        "rotation: upscale skipped"
+                    );
+                    source
+                }
+                Err(e) => {
+                    warn!(
+                        source = %source.display(),
+                        "rotation: upscale failed: {e}; using the original image"
+                    );
+                    source
+                }
+            };
+            Decision::Apply {
+                path: display,
+                apply: RotationApply::from_rotation(rotation),
+            }
+        } else if rotation.pending_upscale.is_some() {
+            // 2. A worker is still running: do not start another.
+            Decision::Wait
+        } else if !rotation.time_until_next().is_zero() {
+            // 3. Timer has not elapsed.
+            Decision::Wait
+        } else {
+            // 4. Pick the next image.
+            match rotation.next_image() {
+                Some(path) => {
+                    let apply = RotationApply::from_rotation(rotation);
+                    let wants_upscale = rotation_wants_upscale(rotation);
+                    rotation.reset_timer();
+                    rotation.save();
+
+                    if wants_upscale {
+                        let target = max_output_resolution(&daemon.outputs);
+                        let source = path.clone();
+                        match spawn_rotation_upscale(rotation, path, target) {
+                            Ok(()) => Decision::Wait,
+                            Err(e) => {
+                                warn!(
+                                    source = %source.display(),
+                                    "rotation: failed to start the upscaler: {e}; using the original image"
+                                );
+                                Decision::Apply {
+                                    path: source,
+                                    apply,
+                                }
+                            }
+                        }
+                    } else {
+                        Decision::Apply { path, apply }
+                    }
+                }
+                None => {
+                    warn!("rotation: no images available");
+                    rotation.reset_timer();
+                    Decision::Wait
+                }
+            }
+        }
+    };
+
+    if let Decision::Apply { path, apply } = decision {
+        apply_rotation_wallpaper(daemon, &path, &apply);
     }
 }
 
@@ -2335,15 +2502,6 @@ fn handle_rotate_start(
         };
     }
 
-    if upscale_mode.is_some() || upscale_cmd.is_some() || upscale_scale.is_some() {
-        // Be honest instead of silently dropping the flags: the daemon only
-        // swaps wallpapers, upscaling happens in the client.
-        warn!(
-            "rotation persists --upscale settings but does not upscale images; \
-             use `wl img`/`wl random` for a one-off upscaled wallpaper"
-        );
-    }
-
     let candidates = rotation::RotationState::new_cycle(&directories);
     if candidates.is_empty() {
         return IpcResponse::Error {
@@ -2365,17 +2523,22 @@ fn handle_rotate_start(
         upscale_scale,
         no_notify,
         notify_path,
+        pending_upscale: None,
     };
 
-    // Show first image immediately
+    // Show the first image immediately; with upscaling enabled it goes through
+    // the same background job as the scheduled rotations.
     if let Some(path) = rot.next_image() {
-        let path_str = path.to_string_lossy().to_string();
-        let result = handle_img(daemon, &path_str, None, rot.resize, &rot.transition);
-        if let IpcResponse::Error { ref message } = result {
-            warn!("rotation: failed to set first wallpaper: {message}");
-        }
-        if !rot.no_notify {
-            write_notify_file(&path, &rot.notify_path);
+        if rotation_wants_upscale(&rot) {
+            let target = max_output_resolution(&daemon.outputs);
+            if let Err(e) = spawn_rotation_upscale(&mut rot, path.clone(), target) {
+                warn!("rotation: failed to start the upscaler: {e}; using the original image");
+                let apply = RotationApply::from_rotation(&rot);
+                apply_rotation_wallpaper(daemon, &path, &apply);
+            }
+        } else {
+            let apply = RotationApply::from_rotation(&rot);
+            apply_rotation_wallpaper(daemon, &path, &apply);
         }
     }
 
@@ -2551,6 +2714,64 @@ mod tests {
             .collect();
         modes.sort_unstable();
         assert_eq!(modes, vec!["crop", "fit"]);
+    }
+
+    #[test]
+    fn rotation_upscale_modes() {
+        use std::time::{Duration, Instant};
+
+        let rotation = |mode: Option<&str>, cmd: Option<&str>, scale: Option<u8>| {
+            crate::rotation::RotationState {
+                directories: Vec::new(),
+                interval: Duration::from_secs(60),
+                candidates: Vec::new(),
+                current_index: 0,
+                next_rotation: Instant::now(),
+                resize: wl_common::ipc_types::ResizeMode::Crop,
+                transition: wl_common::ipc_types::TransitionParams::default(),
+                upscale_mode: mode.map(str::to_string),
+                upscale_cmd: cmd.map(str::to_string),
+                upscale_scale: scale,
+                no_notify: true,
+                notify_path: std::path::PathBuf::new(),
+                pending_upscale: None,
+            }
+        };
+
+        // Explicit opt-outs win over a configured command.
+        assert!(!super::rotation_wants_upscale(&rotation(
+            Some("never"),
+            Some("x"),
+            None
+        )));
+        assert!(!super::rotation_wants_upscale(&rotation(
+            Some("off"),
+            None,
+            Some(2)
+        )));
+        // Opt-ins enable it even without a command (realesrgan is the default).
+        assert!(super::rotation_wants_upscale(&rotation(
+            Some("always"),
+            None,
+            None
+        )));
+        assert!(super::rotation_wants_upscale(&rotation(
+            Some("once"),
+            None,
+            None
+        )));
+        // No mode: a custom command or a forced factor enables it.
+        assert!(super::rotation_wants_upscale(&rotation(
+            None,
+            Some("cmd {input}"),
+            None
+        )));
+        assert!(super::rotation_wants_upscale(&rotation(
+            None,
+            None,
+            Some(4)
+        )));
+        assert!(!super::rotation_wants_upscale(&rotation(None, None, None)));
     }
 
     #[test]
