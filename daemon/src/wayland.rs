@@ -74,6 +74,9 @@ impl From<wayland_client::backend::WaylandError> for WaylandError {
 
 pub struct OutputData {
     pub wl_output: wl_output::WlOutput,
+    /// Registry global name this output was bound from; used to match
+    /// `wl_registry::Event::GlobalRemove` to the right output.
+    pub global_name: Option<u32>,
     pub name: Option<String>,
     pub width: u32,
     pub height: u32,
@@ -92,12 +95,16 @@ pub struct OutputData {
     /// Consecutive recovery failures for this output. Reset on successful recovery.
     /// Used to bound retries and prevent infinite 16 ms spinning.
     pub surface_loss_count: u32,
+    /// The compositor announced this output global is gone. The main loop tears
+    /// it down (Vulkan first, then Wayland) once it is safe.
+    pub removed: bool,
 }
 
 impl OutputData {
-    fn new(wl_output: wl_output::WlOutput) -> Self {
+    fn new(wl_output: wl_output::WlOutput, global_name: u32) -> Self {
         Self {
             wl_output,
+            global_name: Some(global_name),
             name: None,
             width: 0,
             height: 0,
@@ -110,6 +117,7 @@ impl OutputData {
             fractional_scale: None,
             viewport: None,
             surface_loss_count: 0,
+            removed: false,
         }
     }
 }
@@ -414,6 +422,23 @@ impl WaylandState {
         &self.data.outputs
     }
 
+    /// Destroy every Wayland proxy owned by an output (children first).
+    fn destroy_output_proxies(output: &mut OutputData) {
+        if let Some(layer_surface) = output.layer_surface.take() {
+            layer_surface.destroy();
+        }
+        if let Some(fractional_scale) = output.fractional_scale.take() {
+            fractional_scale.destroy();
+        }
+        if let Some(viewport) = output.viewport.take() {
+            viewport.destroy();
+        }
+        if let Some(surface) = output.surface.take() {
+            surface.destroy();
+        }
+        output.configured = false;
+    }
+
     /// Destroy the Wayland surface and layer-surface for a given output, setting
     /// `surface_lost = true` so the main loop's recovery section recreates them.
     /// Safe to call multiple times; already-destroyed objects are a no-op.
@@ -469,6 +494,41 @@ impl WaylandState {
     }
 
     /// Return indices of outputs whose layer surface was closed by the compositor.
+    /// Outputs whose registry global disappeared, as `(index, daemon key)`.
+    ///
+    /// The index refers to the current [`Self::outputs`] order and stays valid
+    /// until [`Self::finish_removed_outputs`] prunes the vector.
+    pub fn removed_outputs(&self) -> Vec<(usize, String)> {
+        self.data
+            .outputs
+            .iter()
+            .enumerate()
+            .filter(|(_, output)| output.removed)
+            .map(|(index, output)| {
+                let name = output
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("output-{index}"));
+                (index, name)
+            })
+            .collect()
+    }
+
+    /// Destroy the Wayland resources of removed outputs and drop them from the
+    /// state, preserving the order of the surviving outputs.
+    ///
+    /// Callers must tear down the matching Vulkan resources first: `VkSurfaceKHR`
+    /// is created from these `wl_surface`s.
+    pub fn finish_removed_outputs(&mut self) {
+        self.data.outputs.retain_mut(|output| {
+            if output.removed {
+                Self::destroy_output_proxies(output);
+                return false;
+            }
+            true
+        });
+    }
+
     pub fn lost_surface_indices(&self) -> Vec<usize> {
         self.data
             .outputs
@@ -544,20 +604,22 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandData {
                     let output =
                         registry.bind::<wl_output::WlOutput, _, _>(name, version.min(4), qh, ());
                     tracing::debug!(name, version, "discovered wl_output");
-                    state.outputs.push(OutputData::new(output));
+                    state.outputs.push(OutputData::new(output, name));
                 }
                 _ => {}
             },
-            wl_registry::Event::GlobalRemove { name: _ } => {
-                // Output removal is handled opportunistically: callers should
-                // poll `outputs()` after each roundtrip. A more sophisticated
-                // implementation would match on the global name stored during
-                // bind, but for now we rely on wl_output::Event::Release or
-                // destroy callbacks if available.
-                //
-                // For wl_output specifically, the compositor sends
-                // `wl_output::Event::Name` / mode events, and on removal the
-                // proxy becomes inert. We leave cleanup to the caller.
+            wl_registry::Event::GlobalRemove { name } => {
+                // Only outputs need teardown; other globals stay bound until the
+                // process exits. Matching by registry name keeps a re-plugged
+                // monitor from leaving a stale entry (and a duplicate name) behind.
+                if let Some(output) = state
+                    .outputs
+                    .iter_mut()
+                    .find(|output| output.global_name == Some(name))
+                {
+                    output.removed = true;
+                    tracing::info!(global = name, name = ?output.name, "output global removed");
+                }
             }
             _ => {}
         }

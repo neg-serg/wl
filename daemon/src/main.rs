@@ -411,6 +411,27 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
+        // A monitor whose registry global disappeared (unplugged) keeps its
+        // Vulkan resources until something prunes them; the stale entry also
+        // made a re-plugged monitor collide on the name and render to a dead
+        // surface. Tear down Vulkan while the Wayland surface is still valid,
+        // then drop the Wayland proxies and the state entry.
+        let removed = wl.removed_outputs();
+        if !removed.is_empty() {
+            // SAFETY: GPU must be idle before the Vulkan resources are destroyed.
+            unsafe {
+                let _ = daemon.vk.device.device_wait_idle();
+            }
+            for (_, name) in &removed {
+                if let Some(mut output) = daemon.outputs.remove(name) {
+                    // SAFETY: GPU is idle and the VkSurfaceKHR is still valid.
+                    unsafe { output.destroy(&daemon.vk.device) };
+                    info!(output = %name, "output unplugged, resources released");
+                }
+            }
+            wl.finish_removed_outputs();
+        }
+
         // A mode or scale change updates the Wayland state but nothing recreates
         // the swapchain, so the compositor keeps scaling the stale buffer (a
         // blurry wallpaper) until an unrelated surface loss. Route the change
