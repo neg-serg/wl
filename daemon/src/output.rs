@@ -31,8 +31,6 @@ pub struct Output {
     pub render_finished_semaphore: vk::Semaphore,
     pub in_flight_fence: vk::Fence,
     pub needs_redraw: bool,
-    /// Set when the swapchain is out-of-date or suboptimal and must be recreated.
-    pub needs_recreate: bool,
     /// Set when Vulkan surface is lost (VK_ERROR_SURFACE_LOST_KHR).
     /// Triggers full Wayland + Vulkan surface recovery on the next tick.
     pub surface_lost: bool,
@@ -86,6 +84,9 @@ pub struct TransitionState {
     pub duration_secs: f32,
     pub progress: f32,
     pub start_time: std::time::Instant,
+    /// When the renderer was last asked for a frame of this transition, used to
+    /// pace frames to `fps` (the main loop itself ticks at ~62 Hz).
+    pub last_present: std::time::Instant,
     pub fps: u32,
     pub angle: f32,
     pub position: (f32, f32),
@@ -148,7 +149,6 @@ impl Output {
             render_finished_semaphore,
             in_flight_fence,
             needs_redraw: true,
-            needs_recreate: false,
             surface_lost: false,
             last_command_buffer: None,
         })

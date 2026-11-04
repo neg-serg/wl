@@ -1,4 +1,5 @@
 use ash::vk;
+use tracing::debug;
 
 use crate::animation;
 use crate::output::Output;
@@ -46,8 +47,13 @@ pub unsafe fn render_frame(
         };
 
     if suboptimal {
-        // Continue rendering this frame but signal recreation afterwards.
-        output.needs_recreate = true;
+        // The swapchain is still usable, so render this frame anyway. Recreation
+        // is driven by ERROR_OUT_OF_DATE_KHR only: latching a "needs recreate"
+        // flag here used to keep `needs_redraw` true forever (see the end of this
+        // function), and the daemon then presented at the 16 ms loop tick rate
+        // for hours, forcing the compositor to repaint the whole output every
+        // frame without a single log line.
+        debug!("acquired a suboptimal swapchain image");
     }
 
     // Allocate command buffer
@@ -240,18 +246,26 @@ pub unsafe fn render_frame(
         image_index,
     ) {
         Ok(suboptimal) if suboptimal => {
-            output.needs_recreate = true;
+            debug!("present returned a suboptimal result");
         }
         Ok(_) => {}
-        Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
-            output.needs_recreate = true;
+        Err(result @ (vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR)) => {
+            // The frame was not presented. The command buffer is still in flight,
+            // so park it for the next fence wait instead of freeing it here, and
+            // let the main loop rebuild the swapchain. Replaying the same failing
+            // present on every tick is what kept the daemon busy forever.
+            debug!(?result, "present failed, recreating the swapchain");
+            output.last_command_buffer = Some(cmd);
+            return Err(RenderError::NeedsRecreate);
         }
         Err(e) => return Err(RenderError::Vulkan(e)),
     }
 
     // Store the command buffer so it can be freed after the fence signals next frame.
     output.last_command_buffer = Some(cmd);
-    output.needs_redraw = output.needs_recreate;
+    // The frame is on screen: nothing to redraw until something changes again
+    // (new wallpaper, transition frame, GIF frame, or a compositor configure).
+    output.needs_redraw = false;
     Ok(())
 }
 
