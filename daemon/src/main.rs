@@ -66,6 +66,29 @@ async fn main() {
         .with_writer(std::io::stderr)
         .init();
 
+    // The daemon takes no options, but --version/--help should not be treated as
+    // "start me" (and then fail on an already running instance).
+    let mut arguments = std::env::args().skip(1);
+    if let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--version" | "-V" => {
+                println!("wl-daemon {}", env!("CARGO_PKG_VERSION"));
+                return;
+            }
+            "--help" | "-h" => {
+                println!(
+                    "wl-daemon {}\n\nA Vulkan wallpaper daemon for Wayland.\n\nUsage: wl-daemon\n\nOptions:\n  -h, --help       Print this help\n  -V, --version    Print version",
+                    env!("CARGO_PKG_VERSION")
+                );
+                return;
+            }
+            other => {
+                eprintln!("wl-daemon: unexpected argument '{other}' (see --help)");
+                std::process::exit(2);
+            }
+        }
+    }
+
     if let Err(e) = check_single_instance() {
         eprintln!("{e}");
         std::process::exit(1);

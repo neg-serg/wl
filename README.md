@@ -5,7 +5,12 @@ A Vulkan-accelerated wallpaper daemon for Wayland compositors. Spiritual success
 ## Features
 
 - **Vulkan rendering** — all compositing, transitions, and animations run on the GPU
-- **Animated wallpapers** — GIF support with GPU-resident frame atlases
+- **Animated wallpapers** — GIF support with GPU-resident frame atlases, shared
+  between outputs of the same resolution
+- **Rotation** — shuffle directories on an interval; `--upscale` runs the
+  upscaler for the next image in the background while rendering continues
+- **EXIF orientation** — photos from cameras/phones are displayed upright, also
+  through upscaling (the orientation is baked into the cached result)
 - **Smooth transitions** — 25 effects (wipe, wave, burn, glitch, fluid*, morph, …) at native refresh rate
 - **Multi-monitor** — per-output wallpaper and independent transitions
 - **Fractional scaling** — respects `wp_fractional_scale_v1`

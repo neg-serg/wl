@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "wl", about = "Vulkan wallpaper tool for Wayland")]
+#[command(name = "wl", version, about = "Vulkan wallpaper tool for Wayland")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -514,6 +514,15 @@ pub fn parse_wave(s: &str) -> Result<(f32, f32), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_exposes_version_and_help_metadata() {
+        Cli::command().debug_assert();
+        let command = Cli::command();
+        assert!(command.get_version().is_some(), "wl --version must work");
+        assert!(command.get_about().is_some());
+    }
 
     #[test]
     fn rejects_degenerate_transition_timing() {
