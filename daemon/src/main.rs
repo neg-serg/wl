@@ -1858,6 +1858,12 @@ fn handle_clear(
         }
     }
 
+    // Persist the empty wallpaper state: without this a restart (or `wl
+    // restore`) brought the previous wallpaper back after `wl clear`.
+    if let Err(e) = daemon.save_session() {
+        warn!("failed to save session state: {e}");
+    }
+
     IpcResponse::Ok
 }
 
