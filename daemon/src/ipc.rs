@@ -109,7 +109,22 @@ impl IpcServer {
     pub async fn accept_command(&self) -> Result<(IpcCommand, UnixStream), IpcError> {
         let (mut stream, _addr) = self.listener.accept().await?;
 
-        let payload = read_framed(&mut stream).await?;
+        // One connection is served at a time, so a client that connects and
+        // never completes its frame must not stall the accept path forever.
+        let payload = match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            read_framed(&mut stream),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(IpcError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "timed out waiting for an IPC command frame",
+                )));
+            }
+        };
         let cmd: IpcCommand =
             bincode::deserialize(&payload).map_err(|e| IpcError::Bincode(e.to_string()))?;
 
