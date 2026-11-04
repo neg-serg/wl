@@ -382,10 +382,34 @@ pub fn parse_outputs(s: &Option<String>) -> Option<Vec<String>> {
     })
 }
 
+/// Reject transition timing values that cannot produce a sane animation.
+///
+/// The daemon refuses to get stuck on a degenerate duration, but a negative,
+/// NaN or infinite value, or a multi-minute transition, is a user error that
+/// should fail at the CLI instead of being silently "completed".
+pub fn validate_transition_timing(duration_secs: f32, fps: u32) -> Result<(), String> {
+    if !duration_secs.is_finite() || duration_secs < 0.0 {
+        return Err(format!(
+            "--transition-duration must be a finite, non-negative number of seconds (got {duration_secs})"
+        ));
+    }
+    if duration_secs > 600.0 {
+        return Err(format!(
+            "--transition-duration is limited to 600 seconds (got {duration_secs})"
+        ));
+    }
+    if fps > 1000 {
+        return Err(format!("--transition-fps is limited to 1000 (got {fps})"));
+    }
+    Ok(())
+}
+
 /// Parse hex color string like "#1a1b26" to [u8; 3].
 pub fn parse_color(s: &str) -> Result<[u8; 3], String> {
     let s = s.trim_start_matches('#');
-    if s.len() != 6 {
+    // Byte length is checked before slicing at byte offsets, so reject anything
+    // that is not ASCII first: `&s[0..2]` would panic on a multi-byte boundary.
+    if !s.is_ascii() || s.len() != 6 {
         return Err(format!(
             "invalid hex color: expected 6 hex digits, got '{s}'"
         ));
@@ -460,4 +484,32 @@ pub fn parse_wave(s: &str) -> Result<(f32, f32), String> {
         .parse()
         .map_err(|_| format!("invalid wave amp: '{}'", parts[1]))?;
     Ok((freq, amp))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_degenerate_transition_timing() {
+        for duration in [f32::NAN, f32::INFINITY, -1.0] {
+            assert!(
+                validate_transition_timing(duration, 30).is_err(),
+                "duration {duration} must be rejected"
+            );
+        }
+        assert!(validate_transition_timing(601.0, 30).is_err());
+        assert!(validate_transition_timing(1.0, 1001).is_err());
+        assert!(validate_transition_timing(0.0, 0).is_ok());
+        assert!(validate_transition_timing(600.0, 1000).is_ok());
+    }
+
+    #[test]
+    fn rejects_multibyte_slices_before_they_can_panic() {
+        // Six bytes, but slicing at 2 would split the UTF-8 sequence.
+        assert!(parse_color("€aaa").is_err());
+        // Six bytes of ASCII still parse.
+        assert_eq!(parse_color("#1a2b3c").unwrap(), [0x1a, 0x2b, 0x3c]);
+        assert_eq!(parse_color("1a2b3c").unwrap(), [0x1a, 0x2b, 0x3c]);
+    }
 }

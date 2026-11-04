@@ -6,7 +6,7 @@ A Vulkan-accelerated wallpaper daemon for Wayland compositors. Spiritual success
 
 - **Vulkan rendering** — all compositing, transitions, and animations run on the GPU
 - **Animated wallpapers** — GIF support with GPU-resident frame atlases
-- **Smooth transitions** — fade, wipe, grow, wave, and outer effects at native refresh rate
+- **Smooth transitions** — 25 effects (wipe, wave, burn, glitch, fluid*, morph, …) at native refresh rate
 - **Multi-monitor** — per-output wallpaper and independent transitions
 - **Fractional scaling** — respects `wp_fractional_scale_v1`
 - **Drop-in compatible** — same CLI interface as swww (`img`, `clear`, `query`, `restore`, etc.)
@@ -39,7 +39,7 @@ wl init
 wl img /path/to/wallpaper.jpg
 
 # Set with a transition
-wl img /path/to/wallpaper.png --transition-type fade --transition-duration 1.5
+wl img /path/to/wallpaper.png --transition-type wave --transition-duration 1.5
 
 # Set a solid color
 wl clear '#1e1e2e'
