@@ -14,7 +14,7 @@ use wl_common::ipc_types::*;
 pub enum IpcError {
     Io(std::io::Error),
     Bincode(String),
-    PayloadTooLarge,
+    PayloadTooLarge { size: usize, limit: usize },
     DaemonAlreadyRunning,
 }
 
@@ -23,7 +23,9 @@ impl std::fmt::Display for IpcError {
         match self {
             Self::Io(e) => write!(f, "IO error: {e}"),
             Self::Bincode(msg) => write!(f, "bincode error: {msg}"),
-            Self::PayloadTooLarge => write!(f, "IPC payload exceeds maximum size"),
+            Self::PayloadTooLarge { size, limit } => {
+                write!(f, "IPC payload is {size} bytes, limit is {limit} bytes")
+            }
             Self::DaemonAlreadyRunning => write!(f, "daemon is already running"),
         }
     }
@@ -44,7 +46,10 @@ impl From<std::io::Error> for IpcError {
 async fn read_framed(stream: &mut UnixStream) -> Result<Vec<u8>, IpcError> {
     let len = stream.read_u32().await? as usize;
     if len > MAX_IPC_PAYLOAD {
-        return Err(IpcError::PayloadTooLarge);
+        return Err(IpcError::PayloadTooLarge {
+            size: len,
+            limit: MAX_IPC_PAYLOAD,
+        });
     }
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf).await?;
@@ -53,7 +58,10 @@ async fn read_framed(stream: &mut UnixStream) -> Result<Vec<u8>, IpcError> {
 
 async fn write_framed(stream: &mut UnixStream, data: &[u8]) -> Result<(), IpcError> {
     if data.len() > MAX_IPC_PAYLOAD {
-        return Err(IpcError::PayloadTooLarge);
+        return Err(IpcError::PayloadTooLarge {
+            size: data.len(),
+            limit: MAX_IPC_PAYLOAD,
+        });
     }
     stream.write_u32(data.len() as u32).await?;
     stream.write_all(data).await?;

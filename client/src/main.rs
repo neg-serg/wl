@@ -361,7 +361,7 @@ async fn handle_rotate(action: cli::RotateAction) -> Result<(), String> {
             eprintln!("Rotation stopped");
             Ok(())
         }
-        cli::RotateAction::Status => {
+        cli::RotateAction::Status { json } => {
             let mut client = connect_or_error().await?;
             let response = client
                 .send_command(&IpcCommand::RotateStatus)
@@ -377,6 +377,20 @@ async fn handle_rotate(action: cli::RotateAction) -> Result<(), String> {
                     images_total,
                     images_remaining,
                 } => {
+                    if json {
+                        let status = rotation_status_json(
+                            active,
+                            interval_secs,
+                            directories.as_deref(),
+                            next_change_secs,
+                            images_total,
+                            images_remaining,
+                        );
+                        let rendered = serde_json::to_string_pretty(&status)
+                            .map_err(|e| format!("failed to encode rotation status: {e}"))?;
+                        println!("{rendered}");
+                        return Ok(());
+                    }
                     if active {
                         let interval_str = interval_secs
                             .map(wl_common::duration_parse::format_duration)
@@ -412,6 +426,26 @@ async fn handle_rotate(action: cli::RotateAction) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+/// JSON shape of `wl rotate status --json`; pinned by a test so scripts do not
+/// break silently when a field is renamed.
+fn rotation_status_json(
+    active: bool,
+    interval_secs: Option<u64>,
+    directories: Option<&[String]>,
+    next_change_secs: Option<u64>,
+    images_total: Option<usize>,
+    images_remaining: Option<usize>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "active": active,
+        "interval_secs": interval_secs,
+        "directories": directories,
+        "next_change_secs": next_change_secs,
+        "images_total": images_total,
+        "images_remaining": images_remaining,
+    })
 }
 
 fn expand_tilde(path: &str) -> String {
@@ -473,5 +507,33 @@ async fn send_and_check(cmd: IpcCommand) -> Result<(), String> {
         IpcResponse::Ok => Ok(()),
         IpcResponse::Error { message } => Err(message),
         _ => Err("unexpected response from daemon".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rotation_status_json;
+
+    #[test]
+    fn rotation_status_json_shape_is_stable() {
+        let active = rotation_status_json(
+            true,
+            Some(3600),
+            Some(&["/pics".to_string(), "/more".to_string()]),
+            Some(1200),
+            Some(10),
+            Some(7),
+        );
+        assert_eq!(active["active"], true);
+        assert_eq!(active["interval_secs"], 3600);
+        assert_eq!(active["directories"][1], "/more");
+        assert_eq!(active["next_change_secs"], 1200);
+        assert_eq!(active["images_total"], 10);
+        assert_eq!(active["images_remaining"], 7);
+
+        let inactive = rotation_status_json(false, None, None, None, None, None);
+        assert_eq!(inactive["active"], false);
+        assert!(inactive["interval_secs"].is_null());
+        assert!(inactive["directories"].is_null());
     }
 }

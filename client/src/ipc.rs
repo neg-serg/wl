@@ -11,7 +11,7 @@ use wl_common::ipc_types::*;
 pub enum IpcError {
     Io(std::io::Error),
     Bincode(String),
-    PayloadTooLarge,
+    PayloadTooLarge { size: usize, limit: usize },
     DaemonNotRunning,
 }
 
@@ -20,7 +20,10 @@ impl std::fmt::Display for IpcError {
         match self {
             Self::Io(e) => write!(f, "IO error: {e}"),
             Self::Bincode(msg) => write!(f, "bincode error: {msg}"),
-            Self::PayloadTooLarge => write!(f, "IPC payload exceeds maximum size"),
+            Self::PayloadTooLarge { size, limit } => write!(
+                f,
+                "IPC payload is {size} bytes, limit is {limit} bytes (split the request, e.g. pass a parent directory)"
+            ),
             Self::DaemonNotRunning => {
                 write!(f, "daemon is not running (could not connect to socket)")
             }
@@ -43,7 +46,10 @@ impl From<std::io::Error> for IpcError {
 async fn read_framed(stream: &mut UnixStream) -> Result<Vec<u8>, IpcError> {
     let len = stream.read_u32().await? as usize;
     if len > MAX_IPC_PAYLOAD {
-        return Err(IpcError::PayloadTooLarge);
+        return Err(IpcError::PayloadTooLarge {
+            size: len,
+            limit: MAX_IPC_PAYLOAD,
+        });
     }
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf).await?;
@@ -52,7 +58,10 @@ async fn read_framed(stream: &mut UnixStream) -> Result<Vec<u8>, IpcError> {
 
 async fn write_framed(stream: &mut UnixStream, data: &[u8]) -> Result<(), IpcError> {
     if data.len() > MAX_IPC_PAYLOAD {
-        return Err(IpcError::PayloadTooLarge);
+        return Err(IpcError::PayloadTooLarge {
+            size: data.len(),
+            limit: MAX_IPC_PAYLOAD,
+        });
     }
     stream.write_u32(data.len() as u32).await?;
     stream.write_all(data).await?;
@@ -114,5 +123,21 @@ impl IpcClient {
             bincode::deserialize(&response_data).map_err(|e| IpcError::Bincode(e.to_string()))?;
 
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IpcError;
+
+    #[test]
+    fn payload_error_reports_size_and_limit() {
+        let error = IpcError::PayloadTooLarge {
+            size: 70_000,
+            limit: 65_536,
+        };
+        let text = error.to_string();
+        assert!(text.contains("70000"), "{text}");
+        assert!(text.contains("65536"), "{text}");
     }
 }
