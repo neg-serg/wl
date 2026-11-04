@@ -114,15 +114,34 @@ impl From<image::ImageError> for DecodeError {
 // SVG helpers
 // ---------------------------------------------------------------------------
 
+/// Largest image side accepted for decoding (16K wallpapers still fit).
+pub const MAX_DECODE_DIMENSION: u32 = 16_384;
+
+/// Decode limits for image files.
+///
+/// The `image` crate defaults allow any dimensions as long as a single
+/// allocation stays under 512 MiB, so a small PNG/GIF claiming 65535x65535 can
+/// make the daemon try to allocate several gigabytes. Refuse pathological
+/// dimensions and cap total decoder allocations instead.
+#[allow(clippy::field_reassign_with_default)] // Limits is #[non_exhaustive]
+fn decode_limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODE_DIMENSION);
+    limits.max_image_height = Some(MAX_DECODE_DIMENSION);
+    limits.max_alloc = Some(1024 * 1024 * 1024);
+    limits
+}
+
 /// Default viewport dimensions used when rasterizing SVGs.
 const SVG_DEFAULT_WIDTH: u32 = 1920;
 const SVG_DEFAULT_HEIGHT: u32 = 1080;
 
 fn is_svg(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some("svg" | "SVG" | "svgz" | "SVGZ")
-    )
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("svg") || extension.eq_ignore_ascii_case("svgz")
+        })
 }
 
 /// Rasterize an SVG file to RGBA8, scaling to fit inside the default viewport
@@ -336,7 +355,9 @@ pub fn decode_to_rgba8(path: &Path) -> Result<DecodedImage, DecodeError> {
         return decode_svg(path);
     }
 
-    let img = image::open(path)?.to_rgba8();
+    let mut reader = image::ImageReader::open(path)?.with_guessed_format()?;
+    reader.limits(decode_limits());
+    let img = reader.decode()?.to_rgba8();
     let (width, height) = img.dimensions();
     let data = img.into_raw();
 
@@ -396,8 +417,15 @@ pub fn gif_frame_stream(path: &Path) -> Result<GifFrameStream, DecodeError> {
     let file = fs::File::open(path)?;
     let reader = BufReader::new(file);
 
-    let decoder = image::codecs::gif::GifDecoder::new(reader)
+    use image::ImageDecoder as _;
+
+    let mut decoder = image::codecs::gif::GifDecoder::new(reader)
         .map_err(|e| DecodeError::Image(e.to_string()))?;
+    // A GIF's logical screen can claim up to 65535x65535 pixels; without this
+    // the compositor tries to allocate the whole canvas.
+    decoder
+        .set_limits(decode_limits())
+        .map_err(|e| DecodeError::Image(format!("GIF exceeds decode limits: {e}")))?;
 
     // `into_frames` hands back an iterator that owns the decoder, so the
     // stream is `'static` and can live independently of this function.
@@ -614,6 +642,43 @@ mod tests {
         assert_eq!(info.durations_ms, vec![30, 50, 70, 110]);
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn svg_detection_is_case_insensitive() {
+        for name in ["a.svg", "a.SVG", "a.Svg", "a.svgz", "a.SVGZ"] {
+            assert!(is_svg(Path::new(name)), "{name} must be detected as SVG");
+        }
+        for name in ["a.png", "a.svg.png", "a.sv"] {
+            assert!(!is_svg(Path::new(name)), "{name} must not be an SVG");
+        }
+    }
+
+    #[test]
+    fn oversized_gif_canvas_is_rejected_instead_of_allocated() {
+        let dir = std::env::temp_dir().join(format!("wl-gif-limits-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("huge.gif");
+
+        {
+            let file = fs::File::create(&path).unwrap();
+            // 20000x20000 logical screen: 1.6 GB of RGBA, far over the cap.
+            let mut encoder = gif::Encoder::new(file, 20_000, 20_000, &[]).unwrap();
+            // from_rgba_speed builds a valid indexed frame (palette + indices);
+            // a hand-filled RGBA buffer produces an unusable file.
+            let mut rgba = [0u8, 0, 0, 255];
+            let frame = gif::Frame::from_rgba_speed(1, 1, &mut rgba, 10);
+            encoder.write_frame(&frame).unwrap();
+        }
+
+        let error = gif_frame_stream(&path)
+            .err()
+            .expect("oversized GIF accepted");
+        assert!(
+            error.to_string().contains("limits"),
+            "unexpected error: {error}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
