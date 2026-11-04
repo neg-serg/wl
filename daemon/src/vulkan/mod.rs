@@ -305,7 +305,11 @@ impl VulkanContext {
 
         // SAFETY: cmd is a valid, newly allocated command buffer.
         unsafe {
-            self.device.begin_command_buffer(cmd, &begin_info)?;
+            if let Err(e) = self.device.begin_command_buffer(cmd, &begin_info) {
+                // Do not leak the buffer when recording cannot start.
+                self.device.free_command_buffers(self.command_pool, &[cmd]);
+                return Err(e);
+            }
         }
 
         Ok(cmd)
@@ -319,22 +323,22 @@ impl VulkanContext {
         &self,
         cmd: vk::CommandBuffer,
     ) -> Result<(), vk::Result> {
-        // SAFETY: cmd is a valid recording command buffer per caller contract.
-        unsafe {
-            self.device.end_command_buffer(cmd)?;
-        }
-
         let submit_info = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd));
 
-        // SAFETY: graphics_queue and cmd are valid. We wait immediately after submit.
+        // SAFETY: graphics_queue and cmd are valid. The buffer is freed on every
+        // path — a failed recording or submit must not leak it.
         unsafe {
-            self.device
-                .queue_submit(self.graphics_queue, &[submit_info], vk::Fence::null())?;
-            self.device.queue_wait_idle(self.graphics_queue)?;
+            if let Err(e) = self.device.end_command_buffer(cmd) {
+                self.device.free_command_buffers(self.command_pool, &[cmd]);
+                return Err(e);
+            }
+            let result = self
+                .device
+                .queue_submit(self.graphics_queue, &[submit_info], vk::Fence::null())
+                .and_then(|()| self.device.queue_wait_idle(self.graphics_queue));
             self.device.free_command_buffers(self.command_pool, &[cmd]);
+            result
         }
-
-        Ok(())
     }
 }
 
