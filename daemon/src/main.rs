@@ -2186,6 +2186,9 @@ fn handle_restore(daemon: &mut DaemonState) -> IpcResponse {
     let known: std::collections::HashSet<String> = daemon.outputs.keys().cloned().collect();
     let groups = group_restore_targets(&state, &known);
 
+    let mut restored = 0usize;
+    let mut failed = 0usize;
+
     // Restore without transition.
     let no_transition = TransitionParams::default();
     for (path, resize, names) in groups {
@@ -2205,8 +2208,13 @@ fn handle_restore(daemon: &mut DaemonState) -> IpcResponse {
                     resize,
                     &no_transition,
                 );
-                if let IpcResponse::Error { message } = &result {
-                    warn!(output = %name, "restore failed: {message}");
+                match &result {
+                    IpcResponse::Ok => restored += 1,
+                    IpcResponse::Error { message } => {
+                        failed += 1;
+                        warn!(output = %name, "restore failed: {message}");
+                    }
+                    _ => {}
                 }
             }
             continue;
@@ -2217,6 +2225,7 @@ fn handle_restore(daemon: &mut DaemonState) -> IpcResponse {
         let decoded = match wl_common::image_decode::decode_to_rgba8(Path::new(&path)) {
             Ok(decoded) => decoded,
             Err(e) => {
+                failed += names.len();
                 warn!(path = %path, "restore failed: {e}");
                 continue;
             }
@@ -2237,9 +2246,25 @@ fn handle_restore(daemon: &mut DaemonState) -> IpcResponse {
             },
         );
 
-        if let IpcResponse::Error { message } = &result {
-            warn!(path = %path, "restore failed: {message}");
+        match &result {
+            IpcResponse::Ok => restored += names.len(),
+            IpcResponse::Error { message } => {
+                failed += names.len();
+                warn!(path = %path, "restore failed: {message}");
+            }
+            _ => {}
         }
+    }
+
+    // 'wl restore' used to report success while every single wallpaper failed
+    // (missing file, unreadable directory). Report a real failure only when
+    // nothing at all could be restored.
+    if restored == 0 && failed > 0 {
+        return IpcResponse::Error {
+            message: format!(
+                "failed to restore {failed} wallpaper(s); check that the saved files still exist"
+            ),
+        };
     }
 
     IpcResponse::Ok

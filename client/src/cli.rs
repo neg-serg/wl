@@ -276,7 +276,11 @@ pub enum RotateAction {
     Stop,
 
     /// Show current rotation status
-    Status,
+    Status {
+        /// Print the status as JSON (for status bars and scripts)
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Skip to next wallpaper immediately
     Next,
