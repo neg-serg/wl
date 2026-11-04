@@ -98,7 +98,7 @@ pub fn socket_path() -> PathBuf {
 /// JSON file that the next start cannot parse (restore then fails, rotation
 /// state is silently dropped). Rename within the same directory is atomic on
 /// POSIX, so readers only ever see the old or the new file.
-fn write_atomic(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+pub fn write_atomic(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
 
     let file_name = path

@@ -1890,33 +1890,115 @@ fn handle_restore(daemon: &mut DaemonState) -> IpcResponse {
         }
     };
 
-    for (output_name, saved) in &state.outputs {
-        if daemon.outputs.contains_key(output_name) {
-            let resize = match saved.resize_mode.as_str() {
-                "crop" => ResizeMode::Crop,
-                "fit" => ResizeMode::Fit,
-                "no" => ResizeMode::No,
-                "center" => ResizeMode::Center,
-                _ => ResizeMode::Crop,
-            };
+    if daemon.pipeline.is_none() {
+        return IpcResponse::Error {
+            message: "wallpaper pipeline not initialized".to_string(),
+        };
+    }
 
-            // Restore without transition
-            let no_transition = TransitionParams::default();
-            let result = handle_img(
-                daemon,
-                &saved.wallpaper_path,
-                Some(vec![output_name.clone()]),
-                resize,
-                &no_transition,
-            );
+    let known: std::collections::HashSet<String> = daemon.outputs.keys().cloned().collect();
+    let groups = group_restore_targets(&state, &known);
 
-            if let IpcResponse::Error { message } = &result {
-                warn!(output = %output_name, "restore failed: {message}");
+    // Restore without transition.
+    let no_transition = TransitionParams::default();
+    for (path, resize, names) in groups {
+        let is_gif = Path::new(&path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("gif"));
+
+        if is_gif {
+            // Animated wallpapers are streamed per output; they are not decoded
+            // into one big RGBA buffer up front.
+            for name in &names {
+                let result = handle_img(
+                    daemon,
+                    &path,
+                    Some(vec![name.clone()]),
+                    resize,
+                    &no_transition,
+                );
+                if let IpcResponse::Error { message } = &result {
+                    warn!(output = %name, "restore failed: {message}");
+                }
             }
+            continue;
+        }
+
+        // Decode once for every output that shows this image at this resize
+        // mode: startup used to decode an 8K wallpaper once per monitor.
+        let decoded = match wl_common::image_decode::decode_to_rgba8(Path::new(&path)) {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                warn!(path = %path, "restore failed: {e}");
+                continue;
+            }
+        };
+
+        let result = set_static_wallpaper(
+            daemon,
+            StaticWallpaperParams {
+                path: &path,
+                names: &names,
+                resize,
+                transition_params: &no_transition,
+                transition_kind: None,
+                data: &decoded.data,
+                width: decoded.width,
+                height: decoded.height,
+                is_gif: false,
+            },
+        );
+
+        if let IpcResponse::Error { message } = &result {
+            warn!(path = %path, "restore failed: {message}");
         }
     }
 
     IpcResponse::Ok
+}
+
+/// Group the saved session into wallpaper sets that can share one decode.
+///
+/// Outputs that show the same file with the same resize mode are restored
+/// together; unknown (unplugged) outputs are skipped. Kept separate from the
+/// Vulkan path so it can be unit tested.
+fn group_restore_targets(
+    state: &wl_common::cache::SessionState,
+    known_outputs: &std::collections::HashSet<String>,
+) -> Vec<(String, ResizeMode, Vec<String>)> {
+    let mut groups: Vec<(String, ResizeMode, Vec<String>)> = Vec::new();
+
+    for (output_name, saved) in &state.outputs {
+        if !known_outputs.contains(output_name) {
+            continue;
+        }
+        let resize = resize_mode_from_str(&saved.resize_mode);
+        match groups
+            .iter_mut()
+            .find(|(path, mode, _)| path == &saved.wallpaper_path && *mode == resize)
+        {
+            Some((_, _, names)) => names.push(output_name.clone()),
+            None => groups.push((
+                saved.wallpaper_path.clone(),
+                resize,
+                vec![output_name.clone()],
+            )),
+        }
+    }
+
+    groups
+}
+
+/// Map a persisted resize mode string to the enum (unknown values default to crop).
+fn resize_mode_from_str(mode: &str) -> ResizeMode {
+    match mode {
+        "crop" => ResizeMode::Crop,
+        "fit" => ResizeMode::Fit,
+        "no" => ResizeMode::No,
+        "center" => ResizeMode::Center,
+        _ => ResizeMode::Crop,
+    }
 }
 
 fn handle_rotate_start(
@@ -2066,12 +2148,111 @@ fn write_notify_file(path: &std::path::Path, notify_path: &std::path::Path) {
         let _ = std::fs::create_dir_all(parent);
     }
     let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let _ = std::fs::write(notify_path, abs.to_string_lossy().as_bytes());
+    // Consumers (status bars, theme scripts) poll this file; a plain write can
+    // let them read a truncated path.
+    let _ = wl_common::cache::write_atomic(notify_path, abs.to_string_lossy().as_bytes());
 }
 
 fn get_target_outputs(daemon: &DaemonState, targets: &Option<Vec<String>>) -> Vec<String> {
     match targets {
         Some(names) => names.clone(),
         None => daemon.outputs.keys().cloned().collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{group_restore_targets, resize_mode_from_str};
+    use std::collections::HashSet;
+    use wl_common::cache::{OutputSessionState, SessionState};
+    use wl_common::ipc_types::ResizeMode;
+
+    fn saved(path: &str, resize: &str) -> OutputSessionState {
+        OutputSessionState {
+            wallpaper_path: path.to_string(),
+            resize_mode: resize.to_string(),
+        }
+    }
+
+    fn state(entries: &[(&str, OutputSessionState)]) -> SessionState {
+        SessionState {
+            outputs: entries
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), value.clone()))
+                .collect(),
+        }
+    }
+
+    fn known(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    #[test]
+    fn restore_groups_outputs_that_share_a_decode() {
+        let session = state(&[
+            ("DP-1", saved("/pics/a.jpg", "crop")),
+            ("DP-2", saved("/pics/a.jpg", "crop")),
+            ("DP-3", saved("/pics/b.jpg", "fit")),
+            // Not present any more: must be skipped, not restored.
+            ("HDMI-A-1", saved("/pics/a.jpg", "crop")),
+        ]);
+
+        let groups = group_restore_targets(&session, &known(&["DP-1", "DP-2", "DP-3"]));
+        assert_eq!(groups.len(), 2);
+
+        let a = groups
+            .iter()
+            .find(|(path, _, _)| path == "/pics/a.jpg")
+            .expect("a.jpg group");
+        assert_eq!(a.1, ResizeMode::Crop);
+        let mut names = a.2.clone();
+        names.sort();
+        assert_eq!(names, vec!["DP-1".to_string(), "DP-2".to_string()]);
+
+        let b = groups
+            .iter()
+            .find(|(path, _, _)| path == "/pics/b.jpg")
+            .expect("b.jpg group");
+        assert_eq!(
+            (b.1, b.2.clone()),
+            (ResizeMode::Fit, vec!["DP-3".to_string()])
+        );
+    }
+
+    #[test]
+    fn restore_splits_outputs_with_different_resize_modes() {
+        let session = state(&[
+            ("DP-1", saved("/pics/a.jpg", "crop")),
+            ("DP-2", saved("/pics/a.jpg", "fit")),
+        ]);
+
+        let groups = group_restore_targets(&session, &known(&["DP-1", "DP-2"]));
+        assert_eq!(groups.len(), 2);
+        let mut modes: Vec<&str> = groups
+            .iter()
+            .map(|(_, mode, _)| match mode {
+                ResizeMode::Crop => "crop",
+                ResizeMode::Fit => "fit",
+                ResizeMode::No => "no",
+                ResizeMode::Center => "center",
+            })
+            .collect();
+        modes.sort_unstable();
+        assert_eq!(modes, vec!["crop", "fit"]);
+    }
+
+    #[test]
+    fn resize_mode_strings_map_back_and_default_to_crop() {
+        assert_eq!(resize_mode_from_str("crop"), ResizeMode::Crop);
+        assert_eq!(resize_mode_from_str("fit"), ResizeMode::Fit);
+        assert_eq!(resize_mode_from_str("no"), ResizeMode::No);
+        assert_eq!(resize_mode_from_str("center"), ResizeMode::Center);
+        assert_eq!(resize_mode_from_str("garbage"), ResizeMode::Crop);
+    }
+
+    #[test]
+    fn restore_of_an_empty_session_has_no_groups() {
+        let groups = group_restore_targets(&SessionState::default(), &known(&["DP-1"]));
+        assert!(groups.is_empty());
     }
 }

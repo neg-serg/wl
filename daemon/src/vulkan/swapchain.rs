@@ -145,7 +145,11 @@ impl Swapchain {
 
         let capabilities =
             Self::query_capabilities(&self.surface_fn, physical_device, self.surface)?;
-        let format = Self::choose_format(&self.surface_fn, physical_device, self.surface)?;
+        // Keep the format the render pass and graphics pipelines were created
+        // for. Re-running choose_format here could pick a different format (the
+        // surface's preferred list is not guaranteed to be stable) while the
+        // render pass keeps the old one, which silently breaks rendering.
+        let format = self.format;
         let extent = Self::choose_extent(&capabilities, width, height);
         let image_count = Self::choose_image_count(&capabilities);
 
