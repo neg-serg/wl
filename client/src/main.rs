@@ -98,6 +98,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             let wave = parse_wave(&transition_wave)?;
             validate_transition_timing(transition_duration, transition_fps)?;
             let parsed_outputs = parse_outputs(&outputs);
+            validate_outputs(&parsed_outputs).await?;
 
             let expanded_notify = expand_tilde(&notify_path);
             let notify_path_buf = std::path::PathBuf::from(&path);
@@ -139,8 +140,10 @@ async fn run(cli: Cli) -> Result<(), String> {
         }
         Commands::Clear { color, outputs } => {
             let rgb = parse_color(&color)?;
+            let parsed_outputs = parse_outputs(&outputs);
+            validate_outputs(&parsed_outputs).await?;
             let cmd = IpcCommand::Clear {
-                outputs: parse_outputs(&outputs),
+                outputs: parsed_outputs,
                 color: rgb,
             };
             send_and_check(cmd).await
@@ -232,6 +235,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             if connect_or_error().await.is_err() {
                 daemon::init().await?;
             }
+            validate_outputs(&parsed_outputs).await?;
 
             // Resolve upscale
             let mut prefs = wl_common::cache::load_upscale_prefs();
@@ -424,6 +428,38 @@ async fn connect_or_error() -> Result<IpcClient, String> {
         IpcError::DaemonNotRunning => "daemon is not running. Start it with 'wl init'.".to_string(),
         other => format!("failed to connect: {other}"),
     })
+}
+
+/// Verify that every requested output name exists in the running daemon.
+async fn validate_outputs(requested: &Option<Vec<String>>) -> Result<(), String> {
+    let Some(requested) = requested else {
+        return Ok(());
+    };
+    let mut client = connect_or_error().await?;
+    let response = client
+        .send_command(&IpcCommand::Query)
+        .await
+        .map_err(|e| format!("query failed: {e}"))?;
+
+    let known: Vec<String> = match response {
+        IpcResponse::QueryResult { outputs } => outputs.into_iter().map(|info| info.name).collect(),
+        IpcResponse::Error { message } => return Err(message),
+        _ => return Err("unexpected response from daemon".to_string()),
+    };
+
+    let missing = unknown_outputs(requested, &known);
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "unknown output(s): {}; available outputs: {}",
+        missing.join(", "),
+        if known.is_empty() {
+            "(none)".to_string()
+        } else {
+            known.join(", ")
+        }
+    ))
 }
 
 async fn send_and_check(cmd: IpcCommand) -> Result<(), String> {

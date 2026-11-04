@@ -390,6 +390,19 @@ pub fn parse_outputs(s: &Option<String>) -> Option<Vec<String>> {
     })
 }
 
+/// Output names the daemon does not know about.
+///
+/// The daemon drops a wallpaper for an unknown name with a warning, which used
+/// to make a typo in `--outputs` look like a success; the CLI now fails before
+/// decoding and uploading anything.
+pub fn unknown_outputs<'a>(requested: &'a [String], known: &[String]) -> Vec<&'a str> {
+    requested
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !known.iter().any(|known| known == name))
+        .collect()
+}
+
 /// Reject transition timing values that cannot produce a sane animation.
 ///
 /// The daemon refuses to get stuck on a degenerate duration, but a negative,
@@ -510,6 +523,21 @@ mod tests {
         assert!(validate_transition_timing(1.0, 1001).is_err());
         assert!(validate_transition_timing(0.0, 0).is_ok());
         assert!(validate_transition_timing(600.0, 1000).is_ok());
+    }
+
+    #[test]
+    fn unknown_outputs_lists_only_missing_names() {
+        let requested = vec![
+            "DP-2".to_string(),
+            "DP-9".to_string(),
+            "HDMI-A-1".to_string(),
+        ];
+        let known = vec!["DP-2".to_string(), "HDMI-A-1".to_string()];
+
+        assert_eq!(unknown_outputs(&requested, &known), vec!["DP-9"]);
+        assert!(unknown_outputs(&[], &known).is_empty());
+        assert!(unknown_outputs(&known, &known).is_empty());
+        assert_eq!(unknown_outputs(&known, &[]).len(), 2);
     }
 
     #[test]
