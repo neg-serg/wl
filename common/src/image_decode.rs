@@ -427,11 +427,23 @@ mod tests {
     fn resize_output_dims_every_mode_fills_target() {
         // Crop fills, fit letterboxes, center/no paste — all end up target-sized,
         // so the GPU draw stays 1:1.
-        assert_eq!(resize((1920, 1080), (1280, 720), ResizeMode::Crop), (1280, 720));
-        assert_eq!(resize((1000, 500), (100, 200), ResizeMode::Crop), (100, 200));
-        assert_eq!(resize((1000, 500), (100, 200), ResizeMode::Center), (100, 200));
+        assert_eq!(
+            resize((1920, 1080), (1280, 720), ResizeMode::Crop),
+            (1280, 720)
+        );
+        assert_eq!(
+            resize((1000, 500), (100, 200), ResizeMode::Crop),
+            (100, 200)
+        );
+        assert_eq!(
+            resize((1000, 500), (100, 200), ResizeMode::Center),
+            (100, 200)
+        );
         assert_eq!(resize((1000, 500), (100, 200), ResizeMode::No), (100, 200));
-        assert_eq!(resize((1920, 1080), (1280, 720), ResizeMode::Fit), (1280, 720));
+        assert_eq!(
+            resize((1920, 1080), (1280, 720), ResizeMode::Fit),
+            (1280, 720)
+        );
         assert_eq!(resize((1000, 500), (100, 200), ResizeMode::Fit), (100, 200));
         assert_eq!(resize((3, 3), (100, 100), ResizeMode::Fit), (100, 100));
     }
@@ -516,7 +528,10 @@ mod tests {
         assert_eq!(out.dimensions(), (16, 16));
         for p in out.pixels() {
             let v = p.0[0] as i32;
-            assert!((v - 128).abs() <= 8, "checkerboard should average to ~128, got {v}");
+            assert!(
+                (v - 128).abs() <= 8,
+                "checkerboard should average to ~128, got {v}"
+            );
         }
     }
 
@@ -624,7 +639,12 @@ mod tests {
             for px in frame.data.chunks_exact(4) {
                 assert_eq!(
                     px,
-                    &[10 + 30 * count as u8, 20 + 30 * count as u8, 30 + 30 * count as u8, 255]
+                    &[
+                        10 + 30 * count as u8,
+                        20 + 30 * count as u8,
+                        30 + 30 * count as u8,
+                        255
+                    ]
                 );
             }
             durations.push(frame.duration_ms);
