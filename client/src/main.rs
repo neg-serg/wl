@@ -96,6 +96,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             let position = parse_position(&transition_pos)?;
             let bezier = parse_bezier(&transition_bezier)?;
             let wave = parse_wave(&transition_wave)?;
+            validate_transition_timing(transition_duration, transition_fps)?;
             let parsed_outputs = parse_outputs(&outputs);
 
             let expanded_notify = expand_tilde(&notify_path);
@@ -214,6 +215,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             let position = parse_position(&transition_pos)?;
             let bezier = parse_bezier(&transition_bezier)?;
             let wave = parse_wave(&transition_wave)?;
+            validate_transition_timing(transition_duration, transition_fps)?;
             let parsed_outputs = parse_outputs(&outputs);
 
             // Ensure daemon is running.
@@ -303,6 +305,7 @@ async fn handle_rotate(action: cli::RotateAction) -> Result<(), String> {
             let position = parse_position(&transition_pos)?;
             let bezier = parse_bezier(&transition_bezier)?;
             let wave = parse_wave(&transition_wave)?;
+            validate_transition_timing(transition_duration, transition_fps)?;
 
             let upscale_mode_str = upscale.as_ref().map(|m| match m {
                 UpscaleMode::Once => "once".to_string(),

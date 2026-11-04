@@ -9,6 +9,9 @@ use std::time::Duration;
 /// - Units: `s` (seconds), `m` (minutes), `h` (hours), `d` (days)
 ///
 /// Returns an error for invalid input, zero duration, or duplicate/out-of-order units.
+#[doc(hidden)]
+pub const MAX_INTERVAL_SECS: u64 = 10 * 365 * 24 * 3600;
+
 pub fn parse_duration(input: &str) -> Result<Duration, String> {
     let input = input.trim();
     if input.is_empty() {
@@ -24,10 +27,10 @@ pub fn parse_duration(input: &str) -> Result<Duration, String> {
 
     // Plain number (no unit suffix) → interpret as minutes
     if let Ok(n) = input.parse::<u64>() {
-        if n == 0 {
-            return Err("interval must be greater than 0".to_string());
-        }
-        return Ok(Duration::from_secs(n * 60));
+        let secs = n
+            .checked_mul(60)
+            .ok_or_else(|| format!("invalid interval '{input}': too large"))?;
+        return checked_interval(input, secs);
     }
 
     let mut total_secs: u64 = 0;
@@ -104,7 +107,12 @@ pub fn parse_duration(input: &str) -> Result<Duration, String> {
             _ => unreachable!(),
         };
 
-        total_secs += value * multiplier;
+        let segment_secs = value
+            .checked_mul(multiplier)
+            .ok_or_else(|| format!("invalid interval '{input}': too large"))?;
+        total_secs = total_secs
+            .checked_add(segment_secs)
+            .ok_or_else(|| format!("invalid interval '{input}': too large"))?;
         found_segment = true;
     }
 
@@ -112,11 +120,25 @@ pub fn parse_duration(input: &str) -> Result<Duration, String> {
         return Err(format!("invalid interval '{input}'"));
     }
 
-    if total_secs == 0 {
+    checked_interval(input, total_secs)
+}
+
+/// Validate a parsed second count and turn it into a [`Duration`].
+///
+/// The upper bound keeps `Instant::now() + interval` (and any libc time math)
+/// representable: an unvalidated 1.3e19-second interval used to parse cleanly
+/// and then panic the daemon when the rotation deadline was computed.
+fn checked_interval(input: &str, secs: u64) -> Result<Duration, String> {
+    if secs == 0 {
         return Err("interval must be greater than 0".to_string());
     }
-
-    Ok(Duration::from_secs(total_secs))
+    if secs > MAX_INTERVAL_SECS {
+        return Err(format!(
+            "invalid interval '{input}': too large (maximum is {} days)",
+            MAX_INTERVAL_SECS / 86_400
+        ));
+    }
+    Ok(Duration::from_secs(secs))
 }
 
 /// Format a duration in seconds to a human-readable string (e.g., `1h 30m`).
@@ -156,6 +178,18 @@ pub fn format_duration(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_intervals_that_would_overflow_a_deadline() {
+        // Wraps u64 when multiplied by 60/86400 if the math is unchecked.
+        assert!(parse_duration("18446744073709551615d").is_err());
+        assert!(parse_duration("150000000000000d").is_err());
+        assert!(parse_duration("18446744073709551615").is_err());
+        // 4000 days is over the 10 year cap.
+        assert!(parse_duration("4000d").is_err());
+        // The cap itself still parses.
+        assert_eq!(parse_duration("3650d").unwrap(), Duration::from_secs(3650 * 86_400));
+    }
 
     #[test]
     fn test_single_units() {

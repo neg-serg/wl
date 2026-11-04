@@ -72,7 +72,7 @@ impl RotationState {
 
     /// Reset the rotation timer to fire after one full interval from now.
     pub fn reset_timer(&mut self) {
-        self.next_rotation = Instant::now() + self.interval;
+        self.next_rotation = deadline_after(self.interval);
     }
 
     /// Time remaining until the next rotation.
@@ -163,6 +163,16 @@ impl RotationState {
             tracing::warn!("failed to save rotation state: {e}");
         }
     }
+}
+
+/// `Instant::now() + interval`, saturating instead of panicking.
+///
+/// Intervals arrive from CLI persistence and user input; a value that is not
+/// representable as an `Instant` deadline must not take the daemon down.
+pub fn deadline_after(interval: Duration) -> Instant {
+    Instant::now()
+        .checked_add(interval)
+        .unwrap_or_else(|| Instant::now() + Duration::from_secs(365 * 24 * 3600))
 }
 
 /// Fisher-Yates shuffle using OS randomness.

@@ -1851,7 +1851,7 @@ fn handle_rotate_start(
         interval,
         candidates,
         current_index: 0,
-        next_rotation: std::time::Instant::now() + interval,
+        next_rotation: rotation::deadline_after(interval),
         resize,
         transition,
         upscale_mode,
