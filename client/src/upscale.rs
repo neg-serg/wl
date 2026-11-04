@@ -1,6 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::io::BufReader;
 use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
@@ -25,6 +24,9 @@ pub fn is_svg(path: &Path) -> bool {
 }
 
 /// Check if the file is an animated GIF (more than 1 frame).
+///
+/// Only frame metadata is read: decoding every frame just to count them used to
+/// decompress the whole animation on the CLI's hot path.
 pub fn is_animated_gif(path: &Path) -> bool {
     let is_gif = path
         .extension()
@@ -35,20 +37,9 @@ pub fn is_animated_gif(path: &Path) -> bool {
         return false;
     }
 
-    // Use image crate to check frame count (needs BufReader for AnimationDecoder)
-    use image::AnimationDecoder;
-    use image::codecs::gif::GifDecoder;
-    let file = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-    let reader = BufReader::new(file);
-    let decoder = match GifDecoder::new(reader) {
-        Ok(d) => d,
-        Err(_) => return false,
-    };
-    // If we can get more than 1 frame, it's animated
-    decoder.into_frames().count() > 1
+    wl_common::image_decode::gif_info(path)
+        .map(|info| info.frame_count > 1)
+        .unwrap_or(false)
 }
 
 /// Get image dimensions without fully decoding.
@@ -169,6 +160,8 @@ fn realesrgan_single_pass(input: &Path, output: &Path, scale: u8) -> Result<(), 
         })?;
 
     if !status.success() {
+        // A failed run can still leave a truncated file that would be cached.
+        let _ = std::fs::remove_file(output);
         return Err(format!(
             "realesrgan-ncnn-vulkan exited with status {status}"
         ));
@@ -187,20 +180,21 @@ fn invoke_realesrgan(input: &Path, output: &Path, scale: u8) -> Result<(), Strin
         return realesrgan_single_pass(input, output, passes[0]);
     }
 
-    // Multi-pass: use temp files for intermediates
+    // Multi-pass: intermediates go through uniquely named temp files, and the
+    // guard removes them even when a pass fails halfway.
     let cache_dir = upscale_cache_dir();
     let _ = std::fs::create_dir_all(&cache_dir);
 
     let mut current_input = input.to_path_buf();
-    let mut temp_files = Vec::new();
+    let mut temps = TempFiles::default();
 
     for (i, &pass_scale) in passes.iter().enumerate() {
         let is_last = i == passes.len() - 1;
         let pass_output = if is_last {
             output.to_path_buf()
         } else {
-            let temp = cache_dir.join(format!("_temp_pass_{i}.png"));
-            temp_files.push(temp.clone());
+            let temp = cache_dir.join(format!("_temp_pass_{}_{i}.png", std::process::id()));
+            temps.push(temp.clone());
             temp
         };
 
@@ -208,11 +202,7 @@ fn invoke_realesrgan(input: &Path, output: &Path, scale: u8) -> Result<(), Strin
         current_input = pass_output;
     }
 
-    // Clean up temp files
-    for temp in temp_files {
-        let _ = std::fs::remove_file(temp);
-    }
-
+    temps.cleanup();
     Ok(())
 }
 
@@ -234,11 +224,53 @@ fn invoke_custom_cmd(cmd: &str, input: &Path, output: &Path) -> Result<(), Strin
         .map_err(|e| format!("failed to run custom upscaler: {e}"))?;
 
     if !status.success() {
+        let _ = std::fs::remove_file(output);
         return Err(format!("custom upscaler exited with status {status}"));
     }
 
     validate_output_file(output)?;
     Ok(())
+}
+
+/// Temp files created for multi-pass upscaling; removed on drop.
+#[derive(Default)]
+struct TempFiles {
+    paths: Vec<std::path::PathBuf>,
+}
+
+impl TempFiles {
+    fn push(&mut self, path: std::path::PathBuf) {
+        self.paths.push(path);
+    }
+
+    fn cleanup(&mut self) {
+        for path in self.paths.drain(..) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+impl Drop for TempFiles {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
+/// Supported upscale factors.
+///
+/// `realesrgan`-style upscalers take 2 or 4 per pass; larger factors are
+/// composed from those passes. Anything else would silently produce a smaller
+/// image than the cache key claims.
+const SUPPORTED_SCALES: [u8; 4] = [2, 4, 8, 16];
+
+fn validate_scale(scale: u8) -> Result<(), String> {
+    if SUPPORTED_SCALES.contains(&scale) {
+        Ok(())
+    } else {
+        Err(format!(
+            "unsupported upscale factor {scale}x (supported: {SUPPORTED_SCALES:?})"
+        ))
+    }
 }
 
 /// Validate that an output file exists and is non-empty.
@@ -257,7 +289,7 @@ fn validate_output_file(path: &Path) -> Result<(), String> {
 // Cache helpers (T014)
 // ---------------------------------------------------------------------------
 
-/// Get source file identity (mtime_secs, file_size) for cache keying.
+/// Get source file identity (mtime_ms, file_size) for cache keying.
 pub fn source_identity(path: &Path) -> Result<(u64, u64), String> {
     let meta = std::fs::metadata(path).map_err(|e| format!("cannot stat source file: {e}"))?;
     let mtime = meta
@@ -265,7 +297,7 @@ pub fn source_identity(path: &Path) -> Result<(u64, u64), String> {
         .map_err(|e| format!("cannot get mtime: {e}"))?
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
+        .as_millis() as u64;
     Ok((mtime, meta.len()))
 }
 
@@ -343,6 +375,8 @@ async fn upscale_image_inner(
         }
     };
 
+    validate_scale(scale)?;
+
     // Canonicalize path for cache keying
     let canonical = std::fs::canonicalize(img_path).unwrap_or_else(|_| img_path.to_path_buf());
     let canonical_str = canonical.to_string_lossy().to_string();
@@ -400,7 +434,7 @@ async fn upscale_image_inner(
     // Update cache
     let entry = UpscaleCacheEntry {
         source_path: canonical_str,
-        source_mtime_secs: mtime,
+        source_mtime_ms: mtime,
         source_size: size,
         scale_factor: scale,
         cached_filename: out_filename,
@@ -444,6 +478,32 @@ mod tests {
         // Source * 2 < target
         assert_eq!(compute_scale_factor(640, 480, 3840, 2160), Some(4));
         assert_eq!(compute_scale_factor(800, 600, 3840, 2160), Some(4));
+    }
+
+    #[test]
+    fn rejects_unsupported_scale_factors() {
+        for good in [2u8, 4, 8, 16] {
+            assert!(validate_scale(good).is_ok(), "{good}x must be accepted");
+        }
+        for bad in [0u8, 1, 3, 5, 6, 7, 9, 255] {
+            assert!(validate_scale(bad).is_err(), "{bad}x must be rejected");
+        }
+        // Every supported factor decomposes into whole 2/4 passes.
+        for good in [2u8, 4, 8, 16] {
+            let product: u32 = decompose_scale(good)
+                .iter()
+                .map(|s| u32::from(*s))
+                .product();
+            assert_eq!(product, u32::from(good));
+        }
+    }
+
+    #[test]
+    fn multi_pass_temp_files_are_unique_per_process_and_pass() {
+        let name = |i: usize| format!("_temp_pass_{}_{i}.png", std::process::id());
+        assert_eq!(name(0), name(0));
+        assert_ne!(name(0), name(1));
+        assert!(name(0).contains(&std::process::id().to_string()));
     }
 
     #[test]

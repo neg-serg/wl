@@ -206,7 +206,9 @@ pub struct UpscaleCacheIndex {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpscaleCacheEntry {
     pub source_path: String,
-    pub source_mtime_secs: u64,
+    /// Source modification time in milliseconds; second precision made a file
+    /// rewritten within the same second look unchanged.
+    pub source_mtime_ms: u64,
     pub source_size: u64,
     pub scale_factor: u8,
     pub cached_filename: String,
@@ -224,7 +226,7 @@ impl UpscaleCacheIndex {
     ) -> Option<&UpscaleCacheEntry> {
         self.entries.iter().find(|e| {
             e.source_path == source_path
-                && e.source_mtime_secs == mtime
+                && e.source_mtime_ms == mtime
                 && e.source_size == size
                 && e.scale_factor == scale
         })
@@ -235,7 +237,7 @@ impl UpscaleCacheIndex {
         // Remove any existing entry with the same identity
         self.entries.retain(|e| {
             !(e.source_path == entry.source_path
-                && e.source_mtime_secs == entry.source_mtime_secs
+                && e.source_mtime_ms == entry.source_mtime_ms
                 && e.source_size == entry.source_size
                 && e.scale_factor == entry.scale_factor)
         });
