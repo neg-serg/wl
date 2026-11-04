@@ -66,12 +66,25 @@ impl GpuTexture {
     /// # Safety
     /// `device` must be the device that created these resources.
     /// Resources must not be in use by any command buffer.
-    pub unsafe fn destroy(&self, device: &ash::Device) {
+    ///
+    /// Null handles are skipped and cleared, so destroying the same texture
+    /// twice (or a "borrowed" copy that reuses another owner's handles) is a
+    /// no-op instead of a GPU double free.
+    pub unsafe fn destroy(&mut self, device: &ash::Device) {
         // SAFETY: Caller guarantees resources are not in use and device is valid.
         unsafe {
-            device.destroy_image_view(self.view, None);
-            device.destroy_image(self.image, None);
-            device.free_memory(self.memory, None);
+            if self.view != vk::ImageView::null() {
+                device.destroy_image_view(self.view, None);
+                self.view = vk::ImageView::null();
+            }
+            if self.image != vk::Image::null() {
+                device.destroy_image(self.image, None);
+                self.image = vk::Image::null();
+            }
+            if self.memory != vk::DeviceMemory::null() {
+                device.free_memory(self.memory, None);
+                self.memory = vk::DeviceMemory::null();
+            }
         }
     }
 }
@@ -168,11 +181,16 @@ impl Output {
     /// `device` must be valid. Old wallpaper texture must not be in use by GPU.
     pub unsafe fn set_wallpaper(&mut self, device: &ash::Device, wallpaper: Wallpaper) {
         // SAFETY: Caller guarantees old texture is not in use.
-        if let Some(old) = self.wallpaper.take() {
+        if let Some(mut old) = self.wallpaper.take() {
             unsafe { old.texture.destroy(device) };
         }
+        // An animated wallpaper keeps its atlas in `animation`; the wallpaper
+        // only mirrors the dimensions. Free the atlas here so switching from a
+        // GIF to a static image cannot leak it.
+        if let Some(mut anim) = self.animation.take() {
+            unsafe { anim.atlas.destroy(device) };
+        }
         self.wallpaper = Some(wallpaper);
-        self.animation = None;
         self.needs_redraw = true;
         tracing::debug!(name = %self.name, "set_wallpaper: needs_redraw = true");
     }
@@ -183,10 +201,12 @@ impl Output {
     /// `device` must be valid. Old wallpaper texture must not be in use by GPU.
     pub unsafe fn clear_wallpaper(&mut self, device: &ash::Device) {
         // SAFETY: Caller guarantees old texture is not in use.
-        if let Some(old) = self.wallpaper.take() {
+        if let Some(mut old) = self.wallpaper.take() {
             unsafe { old.texture.destroy(device) };
         }
-        self.animation = None;
+        if let Some(mut anim) = self.animation.take() {
+            unsafe { anim.atlas.destroy(device) };
+        }
         self.needs_redraw = true;
     }
 
@@ -198,16 +218,16 @@ impl Output {
     pub unsafe fn destroy(&mut self, device: &ash::Device) {
         // SAFETY: Caller guarantees resources not in use and device is valid.
         unsafe {
-            if let Some(transition) = self.transition.take() {
+            if let Some(mut transition) = self.transition.take() {
                 transition.old_texture.destroy(device);
                 // NOTE: transition.new_texture shares handles with
                 // wallpaper.texture (set at transition start). The
                 // wallpaper destruction below handles those resources.
             }
-            if let Some(animation) = self.animation.take() {
+            if let Some(mut animation) = self.animation.take() {
                 animation.atlas.destroy(device);
             }
-            if let Some(wallpaper) = self.wallpaper.take() {
+            if let Some(mut wallpaper) = self.wallpaper.take() {
                 wallpaper.texture.destroy(device);
             }
             for fb in self.framebuffers.drain(..) {
