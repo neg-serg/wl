@@ -355,9 +355,21 @@ pub fn decode_to_rgba8(path: &Path) -> Result<DecodedImage, DecodeError> {
         return decode_svg(path);
     }
 
+    use image::ImageDecoder as _;
+
     let mut reader = image::ImageReader::open(path)?.with_guessed_format()?;
     reader.limits(decode_limits());
-    let img = reader.decode()?.to_rgba8();
+
+    // Phone cameras frequently store the photo unrotated and record the camera
+    // orientation in EXIF; ignoring it showed every portrait wallpaper sideways.
+    let mut decoder = reader.into_decoder()?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder)?;
+    img.apply_orientation(orientation);
+
+    let img = img.to_rgba8();
     let (width, height) = img.dimensions();
     let data = img.into_raw();
 
@@ -620,6 +632,89 @@ mod tests {
             encoder.write_frame(&frame).unwrap();
         }
         path
+    }
+
+    /// Encode a small JPEG and (optionally) prepend an EXIF APP1 segment with
+    /// the given orientation tag.
+    fn jpeg_with_orientation(dir: &std::path::Path, orientation: Option<u8>) -> std::path::PathBuf {
+        use image::{Rgba, RgbaImage};
+
+        let mut img = RgbaImage::new(8, 4);
+        for (x, _, pixel) in img.enumerate_pixels_mut() {
+            *pixel = if x < 4 {
+                Rgba([255, 0, 0, 255])
+            } else {
+                Rgba([0, 0, 255, 255])
+            };
+        }
+
+        let mut jpeg = Vec::new();
+        {
+            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 95);
+            encoder
+                .encode_image(&image::DynamicImage::ImageRgba8(img))
+                .unwrap();
+        }
+
+        let path = dir.join(match orientation {
+            Some(value) => format!("oriented-{value}.jpg"),
+            None => "plain.jpg".to_string(),
+        });
+
+        if let Some(value) = orientation {
+            // SOI (FF D8) then APP1: Exif\0\0 + a tiny little-endian TIFF IFD0
+            // with a single Orientation (0x0112) SHORT entry.
+            let mut tiff = Vec::new();
+            tiff.extend_from_slice(b"II\x2a\x00\x08\x00\x00\x00"); // IFD at offset 8
+            tiff.extend_from_slice(&1u16.to_le_bytes()); // one entry
+            tiff.extend_from_slice(&0x0112u16.to_le_bytes()); // Orientation
+            tiff.extend_from_slice(&3u16.to_le_bytes()); // SHORT
+            tiff.extend_from_slice(&1u32.to_le_bytes()); // count
+            tiff.extend_from_slice(&u16::from(value).to_le_bytes());
+            tiff.extend_from_slice(&[0, 0]); // value padding
+            tiff.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
+
+            let mut payload = b"Exif\x00\x00".to_vec();
+            payload.extend_from_slice(&tiff);
+            let length = (payload.len() + 2) as u16;
+
+            let mut with_exif = Vec::with_capacity(jpeg.len() + payload.len() + 4);
+            with_exif.extend_from_slice(&jpeg[..2]); // SOI
+            with_exif.extend_from_slice(&[0xFF, 0xE1]);
+            with_exif.extend_from_slice(&length.to_be_bytes());
+            with_exif.extend_from_slice(&payload);
+            with_exif.extend_from_slice(&jpeg[2..]);
+            jpeg = with_exif;
+        }
+
+        fs::write(&path, &jpeg).unwrap();
+        path
+    }
+
+    #[test]
+    fn exif_orientation_is_applied_to_static_images() {
+        let dir = std::env::temp_dir().join(format!("wl-exif-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let plain_path = jpeg_with_orientation(&dir, None);
+        let plain = decode_to_rgba8(&plain_path).unwrap();
+        assert_eq!((plain.width, plain.height), (8, 4), "plain JPEG resized?");
+
+        // Orientation 6 = rotate 90 degrees; the 8x4 photo becomes 4x8.
+        let oriented_path = jpeg_with_orientation(&dir, Some(6));
+        let oriented = decode_to_rgba8(&oriented_path).unwrap();
+        assert_eq!(
+            (oriented.width, oriented.height),
+            (4, 8),
+            "EXIF orientation was not applied"
+        );
+
+        // Same pixels the image crate produces when applying the tag itself.
+        let mut expected = image::load_from_memory(&fs::read(&oriented_path).unwrap()).unwrap();
+        expected.apply_orientation(image::metadata::Orientation::Rotate90);
+        assert_eq!(oriented.data, expected.to_rgba8().into_raw());
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
