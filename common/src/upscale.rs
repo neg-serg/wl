@@ -223,6 +223,23 @@ fn validate_scale(scale: u8) -> Result<(), String> {
     }
 }
 
+/// Rotate/flip `output` so it already includes the EXIF orientation of
+/// `source`.
+///
+/// Upscalers write fresh pixel data without metadata; without this the daemon
+/// decodes the result with `NoTransforms` and displays it sideways.
+fn bake_source_orientation(source: &Path, output: &Path) -> Result<(), String> {
+    let orientation = crate::image_decode::read_orientation(source).map_err(|e| e.to_string())?;
+    if orientation == image::metadata::Orientation::NoTransforms {
+        return Ok(());
+    }
+
+    let mut image = image::open(output).map_err(|e| e.to_string())?;
+    image.apply_orientation(orientation);
+    image.save(output).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Validate that an output file exists and is non-empty.
 fn validate_output_file(path: &Path) -> Result<(), String> {
     match std::fs::metadata(path) {
@@ -251,9 +268,14 @@ pub fn source_identity(path: &Path) -> Result<(u64, u64), String> {
     Ok((mtime, meta.len()))
 }
 
+/// Bump when the *meaning* of a cached upscale changes (e.g. the output now has
+/// the source's EXIF orientation baked in), so stale artifacts are not reused.
+const UPSCALE_CACHE_VERSION: u8 = 2;
+
 /// Generate a deterministic cache filename from source identity.
 pub fn cache_filename(source_path: &str, mtime: u64, size: u64, scale: u8) -> String {
     let mut hasher = DefaultHasher::new();
+    UPSCALE_CACHE_VERSION.hash(&mut hasher);
     source_path.hash(&mut hasher);
     mtime.hash(&mut hasher);
     size.hash(&mut hasher);
@@ -360,6 +382,14 @@ pub fn upscale_source(
         None => invoke_realesrgan(&canonical, &out_path, scale)?,
     }
     let elapsed = start.elapsed();
+
+    // External upscalers drop metadata, so a portrait photo would lose its EXIF
+    // orientation and the daemon would show the upscaled file sideways. Bake
+    // the source orientation into the cached pixels instead.
+    if let Err(e) = bake_source_orientation(&canonical, &out_path) {
+        eprintln!("Warning: could not apply the EXIF orientation to the upscaled image: {e}");
+    }
+
     let result_dimensions = get_image_dimensions(&out_path).unwrap_or((0, 0));
 
     let entry = UpscaleCacheEntry {
@@ -502,6 +532,34 @@ mod tests {
                 .product();
             assert_eq!(product, u32::from(good));
         }
+    }
+
+    #[test]
+    fn orientation_is_baked_into_the_upscaled_output() {
+        let dir = std::env::temp_dir().join(format!("wl-upscale-exif-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 8x4 source tagged "rotate 90".
+        let source = crate::test_helpers::jpeg_with_orientation(&dir, Some(6));
+        // Pretend the upscaler produced a 16x8 image without metadata.
+        let output = dir.join("upscaled.png");
+        image::RgbaImage::new(16, 8).save(&output).unwrap();
+
+        bake_source_orientation(&source, &output).unwrap();
+        assert_eq!(
+            image::image_dimensions(&output).unwrap(),
+            (8, 16),
+            "the upscaled output kept the unrotated dimensions"
+        );
+
+        // A source without orientation metadata must be left untouched.
+        let plain = crate::test_helpers::jpeg_with_orientation(&dir, None);
+        let untouched = dir.join("untouched.png");
+        image::RgbaImage::new(16, 8).save(&untouched).unwrap();
+        bake_source_orientation(&plain, &untouched).unwrap();
+        assert_eq!(image::image_dimensions(&untouched).unwrap(), (16, 8));
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
