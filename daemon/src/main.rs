@@ -430,6 +430,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             wl.finish_removed_outputs();
+            // Drop the unplugged outputs from the saved session: otherwise a
+            // stale entry survives until the next wallpaper change and keeps
+            // pointing a future monitor at a maybe-deleted file.
+            if let Err(e) = daemon.save_session() {
+                warn!("failed to save session state after output removal: {e}");
+            }
         }
 
         // Outputs that appeared after startup (monitor plugged in) get their
@@ -2089,6 +2095,7 @@ fn attach_new_outputs(daemon: &mut DaemonState, wl: &mut WaylandState) {
         info!(output = %output_name, "new output attached");
 
         // Re-apply the wallpaper this output had in the saved session.
+        let mut restored = false;
         if let Ok(state) = wl_common::cache::load_session_state()
             && let Some(saved) = state.outputs.get(&output_name)
         {
@@ -2101,11 +2108,54 @@ fn attach_new_outputs(daemon: &mut DaemonState, wl: &mut WaylandState) {
                 resize,
                 &no_transition,
             );
-            if let IpcResponse::Error { message } = &result {
-                warn!(
-                    output = %output_name,
-                    "failed to restore wallpaper on new output: {message}"
+            match &result {
+                IpcResponse::Ok => restored = true,
+                IpcResponse::Error { message } => {
+                    warn!(
+                        output = %output_name,
+                        "failed to restore wallpaper on new output: {message}"
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        // A monitor that never had a wallpaper inherits one from another
+        // output: plugging a screen in and getting a black rectangle is not
+        // what users expect.
+        if !restored {
+            let inherited = daemon
+                .outputs
+                .iter()
+                .filter(|(name, _)| name.as_str() != output_name)
+                .find_map(|(_, other)| {
+                    other
+                        .wallpaper
+                        .as_ref()
+                        .map(|wallpaper| (wallpaper.source_path.clone(), wallpaper.resize_mode))
+                });
+
+            if let Some((path, resize)) = inherited {
+                let no_transition = TransitionParams::default();
+                let result = handle_img(
+                    daemon,
+                    &path,
+                    Some(vec![output_name.clone()]),
+                    resize,
+                    &no_transition,
                 );
+                if let IpcResponse::Error { message } = &result {
+                    warn!(
+                        output = %output_name,
+                        "failed to apply the inherited wallpaper: {message}"
+                    );
+                } else {
+                    info!(
+                        output = %output_name,
+                        path = %path,
+                        "new output inherited the wallpaper from another output"
+                    );
+                }
             }
         }
     }
