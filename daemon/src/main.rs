@@ -327,6 +327,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     info!("daemon ready");
 
     // 10. Main event loop
+    // Consecutive loop ticks that ended with a presented frame. A redraw flag
+    // stuck to true makes the daemon present on every tick, and every present
+    // forces the compositor to repaint the whole output — a stuck flag once held
+    // the GPU at ~96% and ~300 W for hours while logging nothing (see
+    // render.rs). Cheap to detect, expensive to miss, so warn about it.
+    let mut continuous_presents: u32 = 0;
     loop {
         if !daemon.running {
             break;
@@ -584,6 +590,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         tick_animations(&mut daemon);
 
         let mut device_lost = false;
+        let mut presented_any = false;
         for output in daemon.outputs.values_mut() {
             debug!(output = %output.name, needs_redraw = output.needs_redraw, has_swapchain = output.swapchain.is_some(), has_wallpaper = output.wallpaper.is_some(), has_descriptor = output.descriptor_set.is_some(), framebuffers = output.framebuffers.len(), "render loop tick");
             if output.needs_redraw && output.swapchain.is_some() {
@@ -664,6 +671,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     warn!(output = %output.name, "render error: {e}");
                 } else {
+                    presented_any = true;
                     // Frame presented: make the compositor re-read the surface —
                     // Vulkan WSI reports no damage, so without this the wallpaper
                     // can stay frozen behind panel popups (see
@@ -672,6 +680,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+
+        if presented_any {
+            continuous_presents += 1;
+            // 600 ticks is roughly ten seconds of presenting on every single tick.
+            if continuous_presents == 600 || continuous_presents % 6000 == 0 {
+                warn!(
+                    frames = continuous_presents,
+                    "presented on every loop tick; a redraw flag is probably stuck"
+                );
+            }
+        } else {
+            continuous_presents = 0;
+        }
+
         if device_lost {
             // A clean exit (Ok(())) would be treated as success by systemd's
             // Restart=on-failure and leave the daemon dead until manual
@@ -741,7 +763,6 @@ fn teardown_output_surfaces(daemon: &mut DaemonState) {
         output.animation = None;
         output.transition = None;
         output.needs_redraw = false;
-        output.needs_recreate = false;
     }
 }
 
@@ -902,7 +923,12 @@ fn tick_transitions(daemon: &mut DaemonState) {
         let output = daemon.outputs.get_mut(&name).unwrap();
         let completed = if let Some(ref mut t) = output.transition {
             let done = transition::tick(t);
-            output.needs_redraw = true;
+            // Pace frames to the requested transition FPS: the loop tick rate is
+            // not the transition's frame rate.
+            if transition::wants_frame(t) {
+                t.last_present = std::time::Instant::now();
+                output.needs_redraw = true;
+            }
             done
         } else {
             false

@@ -108,6 +108,7 @@ pub fn create_transition(
         duration_secs: params.duration_secs,
         progress: 0.0,
         start_time: Instant::now(),
+        last_present: Instant::now(),
         fps: params.fps,
         angle: params.angle,
         position: params.position,
@@ -123,10 +124,33 @@ pub fn create_transition(
 
 /// Tick the transition, returning true if complete.
 pub fn tick(state: &mut TransitionState) -> bool {
+    // A zero, negative, NaN or infinite duration would leave the linear progress
+    // below 1.0 forever, so the transition could never finish and the daemon
+    // would keep presenting at the loop rate with no way out
+    // (`--transition-duration` is an unvalidated f32 straight from the CLI).
+    if !state.duration_secs.is_finite() || state.duration_secs <= 0.0 {
+        state.progress = 1.0;
+        return true;
+    }
+
     let elapsed = state.start_time.elapsed().as_secs_f32();
     let linear = (elapsed / state.duration_secs).clamp(0.0, 1.0);
     state.progress = cubic_bezier(linear, state.bezier);
     linear >= 1.0
+}
+
+/// Whether the renderer should draw the next frame of this transition now.
+///
+/// The main loop runs at a fixed ~62 Hz and used to be the only pacing for
+/// transitions, so a 30 fps transition (`--transition-fps`, the default) was
+/// drawn at the loop rate and cost roughly twice the GPU time it asked for.
+pub fn wants_frame(state: &TransitionState) -> bool {
+    // 0 means "no limit": draw on every tick.
+    if state.fps == 0 {
+        return true;
+    }
+    let interval = std::time::Duration::from_secs_f32(1.0 / state.fps as f32);
+    state.last_present.elapsed() >= interval
 }
 
 /// Evaluate cubic bezier easing curve.
@@ -160,4 +184,74 @@ fn bezier_component(t: f32, p1: f32, p2: f32) -> f32 {
 fn bezier_derivative(t: f32, p1: f32, p2: f32) -> f32 {
     let mt = 1.0 - t;
     3.0 * mt * mt * p1 + 6.0 * mt * t * (p2 - p1) + 3.0 * t * t * (1.0 - p2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use wl_common::ipc_types::ResizeMode;
+
+    fn texture() -> GpuTexture {
+        GpuTexture {
+            image: ash::vk::Image::null(),
+            view: ash::vk::ImageView::null(),
+            memory: ash::vk::DeviceMemory::null(),
+            width: 1,
+            height: 1,
+        }
+    }
+
+    fn state(duration_secs: f32, fps: u32) -> TransitionState {
+        TransitionState {
+            transition_type: TransitionType::None,
+            kind: TransitionKind::Wave,
+            duration_secs,
+            progress: 0.0,
+            start_time: Instant::now(),
+            last_present: Instant::now(),
+            fps,
+            angle: 0.0,
+            position: (0.5, 0.5),
+            bezier: [0.25, 0.1, 0.25, 1.0],
+            wave: (20.0, 20.0),
+            old_texture: texture(),
+            old_resize_mode: ResizeMode::Crop,
+            new_texture: texture(),
+            new_resize_mode: ResizeMode::Crop,
+            descriptor_set: None,
+        }
+    }
+
+    #[test]
+    fn degenerate_duration_completes_immediately() {
+        // A duration the progress can never reach used to hang the transition
+        // forever, which kept the daemon presenting on every loop tick.
+        for duration in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let mut t = state(duration, 30);
+            assert!(
+                tick(&mut t),
+                "duration {duration} must not leave the transition running"
+            );
+        }
+    }
+
+    #[test]
+    fn normal_duration_is_not_complete_immediately() {
+        let mut t = state(1.0, 30);
+        assert!(!tick(&mut t));
+    }
+
+    #[test]
+    fn frames_are_paced_by_fps() {
+        let mut t = state(1.0, 30);
+        t.last_present = Instant::now() - Duration::from_millis(100);
+        assert!(wants_frame(&t), "a frame is due after the fps interval");
+
+        t.last_present = Instant::now();
+        assert!(!wants_frame(&t), "another frame is not due yet");
+
+        t.fps = 0;
+        assert!(wants_frame(&t), "fps 0 means no limit");
+    }
 }
