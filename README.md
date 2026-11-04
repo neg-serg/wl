@@ -47,6 +47,9 @@ wl clear '#1e1e2e'
 # Query current state
 wl query
 
+# Machine-readable state for scripts/status bars
+wl query --json
+
 # Stop the daemon
 wl kill
 ```

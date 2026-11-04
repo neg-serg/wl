@@ -178,3 +178,32 @@ pub enum ImageFormat {
     Farbfeld,
     Svg,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{OutputInfo, OutputState};
+
+    #[test]
+    fn output_info_json_shape_is_stable() {
+        // Status bars and scripts depend on these names; keep them pinned.
+        let info = OutputInfo {
+            name: "DP-2".to_string(),
+            wallpaper_path: Some("/pics/a.jpg".to_string()),
+            dimensions: Some((3840, 2160)),
+            state: OutputState::Playing { frame: 1, total: 4 },
+            physical_resolution: Some((3840, 2160)),
+        };
+
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["name"], "DP-2");
+        assert_eq!(json["wallpaper_path"], "/pics/a.jpg");
+        assert_eq!(json["dimensions"][0], 3840);
+        assert_eq!(json["physical_resolution"][1], 2160);
+        assert_eq!(json["state"]["Playing"]["frame"], 1);
+        assert_eq!(json["state"]["Playing"]["total"], 4);
+
+        // Round-trips, so the daemon and client stay compatible.
+        let decoded: OutputInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.name, "DP-2");
+    }
+}
