@@ -51,6 +51,32 @@ wl query
 wl kill
 ```
 
+## Development
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+The daemon crate needs `pkg-config`, `libwayland-client` and `glslc` (shaders are
+compiled by `daemon/build.rs`). On NixOS the environment is not inherited, so
+point the build and the test binaries at the store paths explicitly:
+
+```sh
+export PKG_CONFIG_PATH="<wayland-dev>/lib/pkgconfig:<vulkan-loader-dev>/lib/pkgconfig:<libffi-dev>/lib/pkgconfig"
+export PATH="<pkgconf>/bin:<shaderc-bin>/bin:$PATH"        # provides pkg-config / glslc
+export LD_LIBRARY_PATH="<wayland>/lib:<vulkan-loader>/lib:<glibc>/lib"  # for cargo test
+```
+
+`wl-daemon` also ships a GPU integration test that uploads a two-frame GIF atlas
+and reads the pixels back, verifying each atlas tile holds its own frame. It is
+ignored by default because it needs a live Wayland session and a Vulkan device:
+
+```sh
+cargo test -p wl-daemon gif_atlas_tiles -- --ignored --nocapture
+```
+
 ## Architecture
 
 ```
