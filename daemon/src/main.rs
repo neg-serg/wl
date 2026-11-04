@@ -1140,6 +1140,111 @@ fn cancel_transition(
     }
 }
 
+/// Publish an animated wallpaper (already-decoded atlas) to one output.
+///
+/// The caller owns `atlas_tex`; it is freed here if the output is unknown or
+/// the descriptor set cannot be allocated.
+#[allow(clippy::too_many_arguments)]
+fn apply_gif_wallpaper(
+    daemon: &mut DaemonState,
+    path: &str,
+    name: &str,
+    mut atlas_tex: output::GpuTexture,
+    plan: &texture::GifAtlasPlan,
+    frame_w: u32,
+    frame_h: u32,
+    original_w: u32,
+    original_h: u32,
+    resize: ResizeMode,
+    effective_durations: Vec<u32>,
+    total_frames: usize,
+) {
+    let pipeline = daemon.pipeline.as_ref().unwrap();
+
+    let Some(output) = daemon.outputs.get_mut(name) else {
+        warn!(output = %name, "unknown output, dropping the GIF atlas");
+        // SAFETY: the atlas was uploaded but never published.
+        unsafe { atlas_tex.destroy(&daemon.vk.device) };
+        return;
+    };
+
+    // Allocate descriptor set for atlas (reuse existing if available)
+    let ds = match output.descriptor_set {
+        Some(ds) => ds,
+        None => match pipeline.allocate_descriptor_set(&daemon.vk.device) {
+            Ok(ds) => ds,
+            Err(e) => {
+                warn!(output = %name, "failed to allocate descriptor set: {e}");
+                // SAFETY: the atlas was uploaded but never published.
+                unsafe { atlas_tex.destroy(&daemon.vk.device) };
+                return;
+            }
+        },
+    };
+
+    WallpaperPipeline::update_descriptor_set(
+        &daemon.vk.device,
+        ds,
+        atlas_tex.view,
+        pipeline.sampler,
+    );
+    output.descriptor_set = Some(ds);
+
+    let anim_state = animation::create_animation(
+        plan.kept_indices.len() as u32,
+        effective_durations,
+        atlas_tex,
+        frame_w,
+        frame_h,
+    );
+
+    // The atlas is owned by the animation state; the wallpaper entry only
+    // mirrors its dimensions. Null handles mark "not owned", so the common
+    // teardown cannot destroy the atlas twice.
+    let wallpaper = Wallpaper {
+        source_path: path.to_string(),
+        format: ImageFormat::Gif,
+        original_dimensions: (original_w, original_h),
+        display_dimensions: (frame_w, frame_h),
+        resize_mode: resize,
+        texture: output::GpuTexture {
+            image: ash::vk::Image::null(),
+            view: ash::vk::ImageView::null(),
+            memory: ash::vk::DeviceMemory::null(),
+            width: anim_state.atlas.width,
+            height: anim_state.atlas.height,
+        },
+        is_animated: true,
+    };
+
+    // A transition started from the previous wallpaper references textures
+    // that the teardown below is about to free.
+    cancel_transition(&daemon.vk, daemon.transition_pipeline.as_ref(), output);
+
+    // SAFETY: GPU is idle (waited at the top of handle_img).
+    unsafe {
+        if let Some(mut old_wp) = output.wallpaper.take() {
+            old_wp.texture.destroy(&daemon.vk.device);
+        }
+        if let Some(mut old_anim) = output.animation.take() {
+            old_anim.atlas.destroy(&daemon.vk.device);
+        }
+    }
+
+    output.wallpaper = Some(wallpaper);
+    output.animation = Some(anim_state);
+    output.needs_redraw = true;
+
+    debug!(
+        output = %name,
+        total_frames,
+        kept_frames = plan.kept_indices.len(),
+        atlas_w = plan.atlas_width,
+        atlas_h = plan.atlas_height,
+        "gif wallpaper set"
+    );
+}
+
 /// Tick all active animations, requesting redraw when frame changes.
 fn tick_animations(daemon: &mut DaemonState) {
     for output in daemon.outputs.values_mut() {
@@ -1553,54 +1658,67 @@ fn handle_img(
         }
 
         // Multi-frame GIF: decode, resize and upload frames one at a time.
-        // The resized frame size is deterministic, so compute it upfront and
-        // plan how many frames fit the dynamic VRAM budget before decoding
-        // any pixel data.
+        //
+        // Outputs are grouped by the effective resolution they need: one stream
+        // decode + upload per *distinct* resolution, and the remaining outputs
+        // of that group get a GPU-to-GPU copy of the atlas. Previously a GIF
+        // was decoded once per monitor, and every monitor used the resolution
+        // of the first one.
         let original_w = info.width;
         let original_h = info.height;
-        let first_output = names.first().and_then(|n| daemon.outputs.get(n));
-        let (frame_w, frame_h, eff_w, eff_h) = if let Some(output) = first_output {
-            let (eff_w, eff_h) = output.effective_resolution();
-            let (fw, fh) = wl_common::image_decode::resize_output_dims(
-                info.width,
-                info.height,
-                eff_w,
-                eff_h,
-                resize,
-            );
-            (fw, fh, eff_w, eff_h)
-        } else {
-            (info.width, info.height, info.width, info.height)
-        };
-
-        let plan = match texture::plan_gif_atlas(&daemon.vk, info.frame_count, frame_w, frame_h) {
-            Ok(p) => p,
-            Err(e) => {
-                return IpcResponse::Error {
-                    message: format!("failed to plan GIF atlas: {e}"),
-                };
-            }
-        };
-
+        let mut groups: Vec<((u32, u32), Vec<String>)> = Vec::new();
         for name in &names {
-            // Stream-decode the GIF (once per output), resizing and uploading
-            // each kept frame before decoding the next. Peak host memory stays
-            // at one frame regardless of animation length — no giant decode
-            // of the whole animation, no full-size atlas staging buffer.
-            let mut stream = match wl_common::image_decode::gif_frame_stream(img_path) {
-                Ok(s) => s,
+            let target = daemon
+                .outputs
+                .get(name)
+                .map(|output| output.effective_resolution())
+                .unwrap_or((original_w, original_h));
+            match groups
+                .iter_mut()
+                .find(|(dimensions, _)| *dimensions == target)
+            {
+                Some((_, group_names)) => group_names.push(name.clone()),
+                None => groups.push((target, vec![name.clone()])),
+            }
+        }
+
+        for (target, group_names) in &groups {
+            let (eff_w, eff_h) = *target;
+            let (frame_w, frame_h) = wl_common::image_decode::resize_output_dims(
+                original_w, original_h, eff_w, eff_h, resize,
+            );
+
+            let plan = match texture::plan_gif_atlas(&daemon.vk, info.frame_count, frame_w, frame_h)
+            {
+                Ok(plan) => plan,
                 Err(e) => {
-                    warn!(output = %name, "failed to open GIF stream: {e}");
+                    warn!(
+                        target_w = eff_w,
+                        target_h = eff_h,
+                        "failed to plan GIF atlas: {e}"
+                    );
+                    continue;
+                }
+            };
+
+            // Stream-decode the GIF once for this resolution, resizing and
+            // uploading each kept frame before decoding the next. Peak host
+            // memory stays at one chunk of frames regardless of animation
+            // length.
+            let mut stream = match wl_common::image_decode::gif_frame_stream(img_path) {
+                Ok(stream) => stream,
+                Err(e) => {
+                    warn!(
+                        target_w = eff_w,
+                        target_h = eff_h,
+                        "failed to open GIF stream: {e}"
+                    );
                     continue;
                 }
             };
             let mut stream_idx = 0usize;
-            let mut atlas_tex = match texture::upload_gif_atlas(
-                &daemon.vk,
-                &plan,
-                frame_w,
-                frame_h,
-                |idx| {
+            let atlas =
+                match texture::upload_gif_atlas(&daemon.vk, &plan, frame_w, frame_h, |idx| {
                     // Advance the lazy decoder to the requested frame,
                     // discarding skipped frames without retaining them.
                     while stream_idx < idx {
@@ -1614,7 +1732,7 @@ fn handle_img(
                         stream_idx += 1;
                     }
                     let frame = match stream.next_frame() {
-                        Some(Ok(f)) => f,
+                        Some(Ok(frame)) => frame,
                         Some(Err(e)) => return Err(e.to_string()),
                         None => {
                             return Err("GIF stream ended before requested frame".to_string());
@@ -1626,26 +1744,60 @@ fn handle_img(
                         width: info.width,
                         height: info.height,
                     };
-                    let r =
+                    let resized =
                         wl_common::image_decode::resize_for_output(decoded, eff_w, eff_h, resize);
-                    Ok(r.data)
-                },
-            ) {
-                Ok(tex) => tex,
-                Err(VulkanError::DeviceLost) => {
-                    error!(output = %name, "Vulkan device lost during GIF atlas upload, exiting for restart");
-                    std::process::exit(1);
-                }
-                Err(e) => {
-                    warn!(output = %name, "failed to upload GIF atlas: {e}");
-                    continue;
-                }
-            };
+                    Ok(resized.data)
+                }) {
+                    Ok(atlas) => atlas,
+                    Err(VulkanError::DeviceLost) => {
+                        error!("Vulkan device lost during GIF atlas upload, exiting for restart");
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        warn!(
+                            target_w = eff_w,
+                            target_h = eff_h,
+                            "failed to upload GIF atlas: {e}"
+                        );
+                        continue;
+                    }
+                };
 
-            // Build durations for the kept frames, distributing dropped
-            // frame time into the preceding kept frame.
+            // One atlas per output: the first output uses the upload, the rest
+            // are GPU copies (much cheaper than decoding and resizing again).
+            let mut atlases = Vec::with_capacity(group_names.len());
+            let mut copy_failed = false;
+            for _ in 1..group_names.len() {
+                match texture::copy_texture(&daemon.vk, &atlas) {
+                    Ok(copy) => atlases.push(copy),
+                    Err(VulkanError::DeviceLost) => {
+                        error!("Vulkan device lost during GIF atlas copy, exiting for restart");
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        warn!(
+                            target_w = eff_w,
+                            target_h = eff_h,
+                            "failed to copy the GIF atlas: {e}"
+                        );
+                        copy_failed = true;
+                        break;
+                    }
+                }
+            }
+            atlases.insert(0, atlas);
+            if copy_failed || atlases.len() < group_names.len() {
+                warn!(
+                    outputs = group_names.len(),
+                    atlases = atlases.len(),
+                    "could not give every output its own GIF atlas; applying to a subset"
+                );
+            }
+
+            // Durations for the kept frames, distributing dropped frame time
+            // into the preceding kept frame.
             let effective_durations: Vec<u32> = if plan.kept_indices.len() < info.frame_count {
-                let mut eff = Vec::with_capacity(plan.kept_indices.len());
+                let mut durations = Vec::with_capacity(plan.kept_indices.len());
                 for (i, &idx) in plan.kept_indices.iter().enumerate() {
                     let next_idx = if i + 1 < plan.kept_indices.len() {
                         plan.kept_indices[i + 1]
@@ -1653,106 +1805,42 @@ fn handle_img(
                         info.frame_count
                     };
                     let total: u32 = info.durations_ms[idx..next_idx].iter().sum();
-                    eff.push(total);
+                    durations.push(total);
                 }
-                eff
+                durations
             } else {
                 info.durations_ms.clone()
             };
 
-            let pipeline = daemon.pipeline.as_ref().unwrap();
-
-            if let Some(output) = daemon.outputs.get_mut(name) {
-                // Allocate descriptor set for atlas (reuse existing if available)
-                let ds = match output.descriptor_set {
-                    Some(ds) => ds,
-                    None => match pipeline.allocate_descriptor_set(&daemon.vk.device) {
-                        Ok(ds) => ds,
-                        Err(e) => {
-                            warn!(output = %name, "failed to allocate descriptor set: {e}");
-                            // SAFETY: the atlas was uploaded but never published.
-                            unsafe { atlas_tex.destroy(&daemon.vk.device) };
-                            continue;
-                        }
-                    },
-                };
-
-                WallpaperPipeline::update_descriptor_set(
-                    &daemon.vk.device,
-                    ds,
-                    atlas_tex.view,
-                    pipeline.sampler,
-                );
-
-                output.descriptor_set = Some(ds);
-
-                let anim_state = animation::create_animation(
-                    plan.kept_indices.len() as u32,
-                    effective_durations,
+            for (name, atlas_tex) in group_names.iter().zip(atlases) {
+                apply_gif_wallpaper(
+                    daemon,
+                    path,
+                    name,
                     atlas_tex,
+                    &plan,
                     frame_w,
                     frame_h,
+                    original_w,
+                    original_h,
+                    resize,
+                    effective_durations.clone(),
+                    info.frame_count,
                 );
+            }
 
-                // The atlas is owned by the animation state; the wallpaper entry
-                // only mirrors its dimensions. Null handles mark "not owned", so
-                // the common teardown cannot destroy the atlas twice.
-                let wallpaper = Wallpaper {
-                    source_path: path.to_string(),
-                    format: ImageFormat::Gif,
-                    original_dimensions: (original_w, original_h),
-                    display_dimensions: (frame_w, frame_h),
-                    resize_mode: resize,
-                    texture: output::GpuTexture {
-                        image: ash::vk::Image::null(),
-                        view: ash::vk::ImageView::null(),
-                        memory: ash::vk::DeviceMemory::null(),
-                        width: anim_state.atlas.width,
-                        height: anim_state.atlas.height,
-                    },
-                    is_animated: true,
-                };
-
-                // A transition started from the previous wallpaper references
-                // textures that the teardown below is about to free.
-                cancel_transition(&daemon.vk, daemon.transition_pipeline.as_ref(), output);
-
-                // SAFETY: GPU is idle (waited at the top of handle_img).
-                unsafe {
-                    if let Some(mut old_wp) = output.wallpaper.take() {
-                        old_wp.texture.destroy(&daemon.vk.device);
-                    }
-                    if let Some(mut old_anim) = output.animation.take() {
-                        old_anim.atlas.destroy(&daemon.vk.device);
-                    }
-                }
-
-                output.wallpaper = Some(wallpaper);
-                output.animation = Some(anim_state);
-                output.needs_redraw = true;
-
+            if let Some(rss) = rss_bytes() {
                 debug!(
-                    output = %name,
                     total_frames = info.frame_count,
                     kept_frames = plan.kept_indices.len(),
                     atlas_w = plan.atlas_width,
                     atlas_h = plan.atlas_height,
-                    "gif wallpaper set"
+                    atlas_mib =
+                        (plan.atlas_width as u64 * plan.atlas_height as u64 * 4) / (1024 * 1024),
+                    rss_mib = rss / (1024 * 1024),
+                    "gif wallpaper loaded (streaming)"
                 );
             }
-        }
-
-        // Memory check: RSS should stay a small constant number of frames
-        // regardless of how long the animation is.
-        if let Some(rss) = rss_bytes() {
-            debug!(
-                total_frames = info.frame_count,
-                kept_frames = plan.kept_indices.len(),
-                atlas_mib =
-                    (plan.atlas_width as u64 * plan.atlas_height as u64 * 4) / (1024 * 1024),
-                rss_mib = rss / (1024 * 1024),
-                "gif wallpaper loaded (streaming)"
-            );
         }
     } else {
         // Static image path
@@ -2334,6 +2422,29 @@ fn output_key(name: Option<&str>, index: usize) -> String {
         .unwrap_or_else(|| format!("output-{index}"))
 }
 
+/// Whether an output already displays `path` with `resize`.
+///
+/// `wl restore` is also run by the state-sync helper on every wallpaper change;
+/// re-applying an image that is already on screen meant a second full decode
+/// (and, for GIFs, a second atlas upload) of every wallpaper.
+fn output_already_shows(daemon: &DaemonState, name: &str, path: &str, resize: ResizeMode) -> bool {
+    wallpaper_already_shown(
+        daemon
+            .outputs
+            .get(name)
+            .and_then(|output| output.wallpaper.as_ref()),
+        path,
+        resize,
+    )
+}
+
+/// Pure part of [`output_already_shows`], kept separate so it can be tested
+/// without a Vulkan device.
+fn wallpaper_already_shown(wallpaper: Option<&Wallpaper>, path: &str, resize: ResizeMode) -> bool {
+    wallpaper
+        .is_some_and(|wallpaper| wallpaper.source_path == path && wallpaper.resize_mode == resize)
+}
+
 fn handle_restore(daemon: &mut DaemonState) -> IpcResponse {
     let state = match wl_common::cache::load_session_state() {
         Ok(s) => s,
@@ -2359,6 +2470,16 @@ fn handle_restore(daemon: &mut DaemonState) -> IpcResponse {
     // Restore without transition.
     let no_transition = TransitionParams::default();
     for (path, resize, names) in groups {
+        // Nothing to do for outputs that already display exactly this.
+        let names: Vec<String> = names
+            .into_iter()
+            .filter(|name| !output_already_shows(daemon, name, &path, resize))
+            .collect();
+        if names.is_empty() {
+            debug!(path = %path, "restore: every output already shows this wallpaper");
+            continue;
+        }
+
         let is_gif = Path::new(&path)
             .extension()
             .and_then(|e| e.to_str())
@@ -2714,6 +2835,49 @@ mod tests {
             .collect();
         modes.sort_unstable();
         assert_eq!(modes, vec!["crop", "fit"]);
+    }
+
+    #[test]
+    fn restore_skips_outputs_that_already_show_the_wallpaper() {
+        use super::wallpaper_already_shown;
+        use wl_common::ipc_types::{ImageFormat, ResizeMode};
+
+        let wallpaper = |path: &str, resize| crate::output::Wallpaper {
+            source_path: path.to_string(),
+            format: ImageFormat::Jpeg,
+            original_dimensions: (1, 1),
+            display_dimensions: (1, 1),
+            resize_mode: resize,
+            texture: crate::output::GpuTexture {
+                image: ash::vk::Image::null(),
+                view: ash::vk::ImageView::null(),
+                memory: ash::vk::DeviceMemory::null(),
+                width: 1,
+                height: 1,
+            },
+            is_animated: false,
+        };
+
+        assert!(wallpaper_already_shown(
+            Some(&wallpaper("/pics/a.jpg", ResizeMode::Crop)),
+            "/pics/a.jpg",
+            ResizeMode::Crop
+        ));
+        assert!(!wallpaper_already_shown(
+            Some(&wallpaper("/pics/a.jpg", ResizeMode::Crop)),
+            "/pics/b.jpg",
+            ResizeMode::Crop
+        ));
+        assert!(!wallpaper_already_shown(
+            Some(&wallpaper("/pics/a.jpg", ResizeMode::Crop)),
+            "/pics/a.jpg",
+            ResizeMode::Fit
+        ));
+        assert!(!wallpaper_already_shown(
+            None,
+            "/pics/a.jpg",
+            ResizeMode::Crop
+        ));
     }
 
     #[test]
