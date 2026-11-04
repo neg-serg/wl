@@ -694,6 +694,7 @@ pub fn upload_gif_atlas(
             mapped.cast::<u8>(),
             frame_bytes,
             frame_width,
+            frame_height,
             plan,
             &mut get_frame,
         )
@@ -778,6 +779,7 @@ unsafe fn record_atlas_upload(
     mapped: *mut u8,
     frame_bytes: usize,
     frame_width: u32,
+    frame_height: u32,
     plan: &GifAtlasPlan,
     get_frame: &mut impl FnMut(usize) -> Result<Vec<u8>, String>,
 ) -> Result<(), VulkanError> {
@@ -860,7 +862,7 @@ unsafe fn record_atlas_upload(
                 },
                 image_extent: vk::Extent3D {
                     width: frame_width,
-                    height: plan.atlas_height,
+                    height: frame_height,
                     depth: 1,
                 },
             };

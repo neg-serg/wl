@@ -618,13 +618,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 output.needs_redraw = true;
 
                 // Re-bind wallpaper descriptor set to ensure texture is displayed.
-                if let (Some(ds), Some(pipeline), Some(wp)) =
-                    (output.descriptor_set, &daemon.pipeline, &output.wallpaper)
-                {
+                if let (Some(ds), Some(pipeline), Some(view)) = (
+                    output.descriptor_set,
+                    &daemon.pipeline,
+                    current_wallpaper_view(output),
+                ) {
                     WallpaperPipeline::update_descriptor_set(
                         &daemon.vk.device,
                         ds,
-                        wp.texture.view,
+                        view,
                         pipeline.sampler,
                     );
                 }
@@ -938,15 +940,12 @@ fn rebuild_output_surfaces(daemon: &mut DaemonState, wl: &mut WaylandState) {
         output.applied_resolution = (eff_w.max(1), eff_h.max(1));
         output.needs_redraw = true;
 
-        if let (Some(ds), Some(pipeline), Some(wp)) =
-            (output.descriptor_set, &daemon.pipeline, &output.wallpaper)
-        {
-            WallpaperPipeline::update_descriptor_set(
-                &daemon.vk.device,
-                ds,
-                wp.texture.view,
-                pipeline.sampler,
-            );
+        if let (Some(ds), Some(pipeline), Some(view)) = (
+            output.descriptor_set,
+            &daemon.pipeline,
+            current_wallpaper_view(output),
+        ) {
+            WallpaperPipeline::update_descriptor_set(&daemon.vk.device, ds, view, pipeline.sampler);
         }
 
         info!(output = %name, "surface rebuilt after reconnection");
@@ -1036,19 +1035,33 @@ fn complete_transition(daemon: &mut DaemonState, output_name: &str) {
     // output.wallpaper.texture (set when the transition started).
     cancel_transition(&daemon.vk, daemon.transition_pipeline.as_ref(), output);
 
-    // Update descriptor set to point to the wallpaper's texture (which has new_texture's handles)
-    if let (Some(ds), Some(pipeline), Some(wp)) =
-        (output.descriptor_set, &daemon.pipeline, &output.wallpaper)
-    {
-        WallpaperPipeline::update_descriptor_set(
-            &daemon.vk.device,
-            ds,
-            wp.texture.view,
-            pipeline.sampler,
-        );
+    // Point the descriptor set at whatever draws now (the transition's new
+    // texture, or the atlas of an animated wallpaper).
+    if let (Some(ds), Some(pipeline), Some(view)) = (
+        output.descriptor_set,
+        &daemon.pipeline,
+        current_wallpaper_view(output),
+    ) {
+        WallpaperPipeline::update_descriptor_set(&daemon.vk.device, ds, view, pipeline.sampler);
     }
 
     output.needs_redraw = true;
+}
+
+/// Image view that currently draws this output.
+///
+/// An animated wallpaper keeps its texture in `animation`; the `wallpaper`
+/// entry only mirrors the dimensions, so its view is null and must not be bound
+/// to the descriptor set.
+fn current_wallpaper_view(output: &Output) -> Option<ash::vk::ImageView> {
+    if let Some(anim) = output.animation.as_ref() {
+        return Some(anim.atlas.view);
+    }
+    output
+        .wallpaper
+        .as_ref()
+        .map(|wp| wp.texture.view)
+        .filter(|view| *view != ash::vk::ImageView::null())
 }
 
 /// Drop an in-flight transition, freeing the textures and descriptor set it
