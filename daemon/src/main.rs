@@ -9,8 +9,12 @@ mod vulkan;
 mod wayland;
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
+use std::pin::Pin;
+
+use tokio::net::UnixStream;
 
 use nix::sys::socket::{self as nix_socket, AddressFamily, SockFlag, SockType};
 use tracing::{debug, error, info, warn};
@@ -333,13 +337,26 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the GPU at ~96% and ~300 W for hours while logging nothing (see
     // render.rs). Cheap to detect, expensive to miss, so warn about it.
     let mut continuous_presents: u32 = 0;
+
+    // A command that was accepted but not fully read must survive the 16 ms
+    // tick. Creating a fresh accept future every iteration (as this loop used
+    // to) cancelled it mid-read and dropped the connection, so a client that
+    // took slightly longer than a tick to deliver its frame saw an EOF.
+    type PendingCommand = Result<(IpcCommand, UnixStream), ipc::IpcError>;
+    let mut pending_command: Option<Pin<Box<dyn Future<Output = PendingCommand> + '_>>> = None;
+
     loop {
         if !daemon.running {
             break;
         }
 
+        if pending_command.is_none() {
+            pending_command = Some(Box::pin(ipc.accept_command()));
+        }
+
         tokio::select! {
-            result = ipc.accept_command() => {
+            result = pending_command.as_mut().expect("pending command future is set above") => {
+                pending_command = None;
                 match result {
                     Ok((cmd, mut stream)) => {
                         let response = handle_command(&mut daemon, cmd);

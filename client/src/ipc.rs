@@ -93,7 +93,23 @@ impl IpcClient {
         let data = bincode::serialize(cmd).map_err(|e| IpcError::Bincode(e.to_string()))?;
         write_framed(&mut self.stream, &data).await?;
 
-        let response_data = read_framed(&mut self.stream).await?;
+        // A wedged daemon must fail the CLI instead of hanging it forever:
+        // image decode/upload and device recovery can take a few seconds, so
+        // the reply budget is generous but bounded.
+        let response_data = match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            read_framed(&mut self.stream),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(IpcError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "timed out waiting for the daemon response",
+                )));
+            }
+        };
         let response: IpcResponse =
             bincode::deserialize(&response_data).map_err(|e| IpcError::Bincode(e.to_string()))?;
 
