@@ -1039,6 +1039,30 @@ mod tests {
     }
 
     #[test]
+    fn every_frame_in_a_chunk_gets_its_own_buffer_offset() {
+        // Replays the upload loop's addressing: frames inside one submitted
+        // command buffer must read distinct staging offsets, otherwise the GPU
+        // (which executes after recording) copies the same pixels into every
+        // atlas slot — the frozen-animation bug.
+        let frame_bytes = 64 * 64 * 4;
+        let total_frames = 37;
+        let per_chunk = staging_frames_per_chunk(frame_bytes, total_frames);
+        let mut seen_slots = 0usize;
+        for chunk in (0..total_frames).collect::<Vec<_>>().chunks(per_chunk) {
+            let offsets: Vec<u64> = (0..chunk.len())
+                .map(|slot| (slot * frame_bytes) as u64)
+                .collect();
+            let mut unique = offsets.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(unique, offsets, "two frames share a buffer offset");
+            assert_eq!(unique.len(), chunk.len());
+            seen_slots += chunk.len();
+        }
+        assert_eq!(seen_slots, total_frames, "chunking dropped frames");
+    }
+
+    #[test]
     fn staging_chunks_fit_the_budget_and_never_go_empty() {
         // A frame larger than the budget is staged alone (no zero-sized chunk).
         assert_eq!(
