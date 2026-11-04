@@ -7,7 +7,7 @@ pub use wl_common::scan::scan_directories;
 pub fn pick_random(candidates: &[PathBuf]) -> &Path {
     assert!(!candidates.is_empty(), "pick_random called with empty list");
     let mut buf = [0u8; 8];
-    getrandom::getrandom(&mut buf).expect("failed to get random bytes");
+    getrandom::fill(&mut buf).expect("failed to get random bytes");
     let index = u64::from_ne_bytes(buf) as usize % candidates.len();
     &candidates[index]
 }
