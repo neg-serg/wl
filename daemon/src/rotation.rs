@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use wl_common::cache::RotationPersist;
@@ -31,6 +32,41 @@ pub struct RotationState {
     pub upscale_scale: Option<u8>,
     pub no_notify: bool,
     pub notify_path: PathBuf,
+    /// An upscale of the next rotation image running on a worker thread.
+    pub pending_upscale: Option<PendingUpscale>,
+}
+
+/// An upscale job running outside the event loop.
+///
+/// Rotation applies the upscaled image as soon as the worker reports back, so a
+/// multi-second `realesrgan` run does not freeze rendering.
+pub struct PendingUpscale {
+    /// Source image being upscaled (logged, and the fallback if it fails).
+    pub source: PathBuf,
+    pub started: Instant,
+    result: Arc<Mutex<Option<Result<wl_common::upscale::UpscaleOutcome, String>>>>,
+}
+
+impl PendingUpscale {
+    pub fn new(source: PathBuf) -> Self {
+        Self {
+            source,
+            started: Instant::now(),
+            result: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Handle the worker should write its result into.
+    pub fn result_slot(
+        &self,
+    ) -> Arc<Mutex<Option<Result<wl_common::upscale::UpscaleOutcome, String>>>> {
+        Arc::clone(&self.result)
+    }
+
+    /// Take the worker's result if it has finished.
+    pub fn take_result(&mut self) -> Option<Result<wl_common::upscale::UpscaleOutcome, String>> {
+        self.result.lock().ok().and_then(|mut slot| slot.take())
+    }
 }
 
 impl RotationState {
@@ -153,6 +189,7 @@ impl RotationState {
             upscale_scale: p.upscale_scale,
             no_notify: p.no_notify,
             notify_path,
+            pending_upscale: None,
         }
     }
 

@@ -44,6 +44,12 @@ wl img /path/to/wallpaper.png --transition-type wave --transition-duration 1.5
 # Set a solid color
 wl clear '#1e1e2e'
 
+# Rotate wallpapers from directories, upscaling each image in the background
+# (needs realesrgan-ncnn-vulkan, or pass --upscale-cmd)
+wl rotate start ~/pics ~/more --interval 30m --upscale always
+wl rotate status --json
+wl rotate stop
+
 # Query current state
 wl query
 
