@@ -492,14 +492,25 @@ pub fn plan_gif_atlas(
     })
 }
 
+/// Host memory budget for the GIF atlas staging buffer.
+///
+/// Frames are streamed through the staging buffer in *chunks*: the GPU reads
+/// host-written staging memory when the submitted commands execute, not when
+/// they are recorded, so every copy inside one submit has to read a distinct
+/// buffer region. A one-frame buffer would therefore need one submit per frame;
+/// a bounded multi-frame buffer keeps the upload to `ceil(frames / chunk)` while
+/// still never holding the whole atlas in RAM.
+const ATLAS_STAGING_BUDGET_BYTES: usize = 32 * 1024 * 1024;
+
 /// Upload a GIF frame atlas to a GPU-local texture, decoding one frame at a time.
 ///
 /// `get_frame` is called once per kept frame, in ascending index order, and
 /// must return that frame's RGBA8 pixel data (`frame_width * frame_height * 4`
-/// bytes). Frames are copied into the atlas through a single small staging
-/// buffer (one frame's worth), so at no point is the whole animation — or even
-/// the whole atlas — held in host memory: peak RAM is one decoded frame plus
-/// one resized frame in the caller.
+/// bytes). Frames are copied into the atlas through a bounded staging buffer
+/// (up to [`ATLAS_STAGING_BUDGET_BYTES`] or one frame, whichever is larger), so
+/// at no point is the whole animation — or even the whole atlas — held in host
+/// memory: peak RAM is one chunk of decoded frames plus one resized frame in
+/// the caller.
 pub fn upload_gif_atlas(
     vk: &VulkanContext,
     plan: &GifAtlasPlan,
@@ -512,13 +523,18 @@ pub fn upload_gif_atlas(
     let atlas_width = plan.atlas_width;
     let atlas_height = plan.atlas_height;
 
+    let frames_per_chunk = (ATLAS_STAGING_BUDGET_BYTES / frame_bytes.max(1))
+        .clamp(1, plan.kept_indices.len().max(1));
+    let staging_bytes = frame_bytes * frames_per_chunk;
+
     tracing::debug!(
         frames = plan.kept_indices.len(),
         atlas_w = atlas_width,
         atlas_h = atlas_height,
         atlas_mib = (atlas_width as u64 * atlas_height as u64 * 4) / (1024 * 1024),
-        staging_bytes = frame_bytes,
-        "GIF atlas upload: streaming frame-by-frame"
+        staging_bytes,
+        frames_per_chunk,
+        "GIF atlas upload: streaming frame-by-frame",
     );
 
     // --- Create the device-local atlas image ---
@@ -540,9 +556,9 @@ pub fn upload_gif_atlas(
 
     // SAFETY: device is valid; image_info is fully initialized.
     let image = unsafe {
-        device.create_image(&image_info, None).map_err(|e| {
-            VulkanError::TextureUpload(format!("atlas image creation: {e}"))
-        })?
+        device
+            .create_image(&image_info, None)
+            .map_err(|e| VulkanError::TextureUpload(format!("atlas image creation: {e}")))?
     };
 
     // SAFETY: image is a valid image handle.
@@ -584,62 +600,19 @@ pub fn upload_gif_atlas(
             })?;
     }
 
-    // --- Record and submit transfer commands ---
-    // SAFETY: VulkanContext guarantees a valid command pool and device.
-    let cmd = unsafe {
-        vk.begin_single_time_commands().map_err(|e| {
-            device.destroy_image(image, None);
-            device.free_memory(image_memory, None);
-            VulkanError::TextureUpload(format!("begin command buffer: {e}"))
-        })?
-    };
-
-    // Transition UNDEFINED -> TRANSFER_DST_OPTIMAL
-    let barrier_to_transfer = vk::ImageMemoryBarrier::default()
-        .src_access_mask(vk::AccessFlags::empty())
-        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-        .old_layout(vk::ImageLayout::UNDEFINED)
-        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(image)
-        .subresource_range(vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
-        });
-
-    // SAFETY: cmd is a valid recording command buffer; image is a valid image.
-    unsafe {
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::TOP_OF_PIPE,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[barrier_to_transfer],
-        );
-    }
-
-    // --- Small staging buffer: one frame's worth, reused for every frame ---
+    // --- Bounded staging buffer, reused chunk by chunk ---
     let staging_buffer_info = vk::BufferCreateInfo::default()
-        .size(frame_bytes as vk::DeviceSize)
+        .size(staging_bytes as vk::DeviceSize)
         .usage(vk::BufferUsageFlags::TRANSFER_SRC)
         .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
     // SAFETY: device is valid; staging_buffer_info is properly initialized.
     let staging_buffer = unsafe {
-        device
-            .create_buffer(&staging_buffer_info, None)
-            .map_err(|e| {
-                device.destroy_image(image, None);
-                device.free_memory(image_memory, None);
-                device.free_command_buffers(vk.command_pool, &[cmd]);
-                VulkanError::TextureUpload(format!("atlas staging buffer creation: {e}"))
-            })?
+        device.create_buffer(&staging_buffer_info, None).map_err(|e| {
+            device.destroy_image(image, None);
+            device.free_memory(image_memory, None);
+            VulkanError::TextureUpload(format!("atlas staging buffer creation: {e}"))
+        })?
     };
 
     // SAFETY: staging_buffer is a valid buffer just created above.
@@ -656,7 +629,6 @@ pub fn upload_gif_atlas(
                 device.destroy_buffer(staging_buffer, None);
                 device.destroy_image(image, None);
                 device.free_memory(image_memory, None);
-                device.free_command_buffers(vk.command_pool, &[cmd]);
             }
             VulkanError::TextureUpload(
                 "no HOST_VISIBLE | HOST_COHERENT memory type found".to_string(),
@@ -675,7 +647,6 @@ pub fn upload_gif_atlas(
                 device.destroy_buffer(staging_buffer, None);
                 device.destroy_image(image, None);
                 device.free_memory(image_memory, None);
-                device.free_command_buffers(vk.command_pool, &[cmd]);
                 VulkanError::TextureUpload(format!("atlas staging memory allocation: {e}"))
             })?
     };
@@ -689,7 +660,6 @@ pub fn upload_gif_atlas(
                 device.free_memory(staging_memory, None);
                 device.destroy_image(image, None);
                 device.free_memory(image_memory, None);
-                device.free_command_buffers(vk.command_pool, &[cmd]);
                 VulkanError::TextureUpload(format!("bind atlas staging buffer memory: {e}"))
             })?;
     }
@@ -700,7 +670,7 @@ pub fn upload_gif_atlas(
             .map_memory(
                 staging_memory,
                 0,
-                frame_bytes as vk::DeviceSize,
+                staging_mem_reqs.size,
                 vk::MemoryMapFlags::empty(),
             )
             .map_err(|e| {
@@ -708,146 +678,41 @@ pub fn upload_gif_atlas(
                 device.free_memory(staging_memory, None);
                 device.destroy_image(image, None);
                 device.free_memory(image_memory, None);
-                device.free_command_buffers(vk.command_pool, &[cmd]);
                 VulkanError::TextureUpload(format!("map atlas staging memory: {e}"))
             })?
     };
 
-    // Copy each kept frame into its atlas slot, one at a time.
-    for (slot, &frame_idx) in plan.kept_indices.iter().enumerate() {
-        let data = match get_frame(frame_idx) {
-            Ok(d) => d,
-            Err(e) => {
-                // SAFETY: All handles valid; nothing has been submitted yet.
-                unsafe {
-                    device.unmap_memory(staging_memory);
-                    device.destroy_buffer(staging_buffer, None);
-                    device.free_memory(staging_memory, None);
-                    device.destroy_image(image, None);
-                    device.free_memory(image_memory, None);
-                    device.free_command_buffers(vk.command_pool, &[cmd]);
-                }
-                return Err(VulkanError::TextureUpload(format!(
-                    "failed to produce GIF frame {frame_idx}: {e}"
-                )));
-            }
-        };
-        if data.len() < frame_bytes {
-            // SAFETY: All handles valid; nothing has been submitted yet.
-            unsafe {
-                device.unmap_memory(staging_memory);
-                device.destroy_buffer(staging_buffer, None);
-                device.free_memory(staging_memory, None);
-                device.destroy_image(image, None);
-                device.free_memory(image_memory, None);
-                device.free_command_buffers(vk.command_pool, &[cmd]);
-            }
-            return Err(VulkanError::TextureUpload(format!(
-                "GIF frame {frame_idx} is {} bytes, expected at least {frame_bytes}",
-                data.len()
-            )));
-        }
+    // SAFETY: every handle passed is valid for the duration of the call and the
+    // staging memory is mapped for `staging_bytes` bytes.
+    let upload = unsafe {
+        record_atlas_upload(
+            vk,
+            image,
+            staging_buffer,
+            staging_bytes,
+            mapped.cast::<u8>(),
+            frame_bytes,
+            frame_width,
+            plan,
+            &mut get_frame,
+        )
+    };
 
-        // SAFETY: mapped is valid for frame_bytes bytes; data is at least that long.
-        unsafe {
-            std::ptr::copy_nonoverlapping(data.as_ptr(), mapped as *mut u8, frame_bytes);
-        }
-
-        // Copy staging buffer -> atlas image at this frame's horizontal slot.
-        let region = vk::BufferImageCopy {
-            buffer_offset: 0,
-            buffer_row_length: 0,
-            buffer_image_height: 0,
-            image_subresource: vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                mip_level: 0,
-                base_array_layer: 0,
-                layer_count: 1,
-            },
-            image_offset: vk::Offset3D {
-                x: ((slot as u32) * frame_width) as i32,
-                y: 0,
-                z: 0,
-            },
-            image_extent: vk::Extent3D {
-                width: frame_width,
-                height: frame_height,
-                depth: 1,
-            },
-        };
-
-        // SAFETY: cmd is recording; staging_buffer contains the frame pixels;
-        // the atlas image is in TRANSFER_DST_OPTIMAL layout.
-        unsafe {
-            device.cmd_copy_buffer_to_image(
-                cmd,
-                staging_buffer,
-                image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[region],
-            );
-        }
-    }
-
-    // SAFETY: staging_memory is mapped and HOST_COHERENT; no further writes happen.
+    // SAFETY: the upload either completed (its submits waited for the queue) or
+    // never submitted; the staging memory is no longer needed in both cases.
     unsafe {
         device.unmap_memory(staging_memory);
-    }
-
-    // Transition TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
-    let barrier_to_shader = vk::ImageMemoryBarrier::default()
-        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-        .dst_access_mask(vk::AccessFlags::SHADER_READ)
-        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(image)
-        .subresource_range(vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
-        });
-
-    // SAFETY: cmd is a valid recording command buffer; image is in TRANSFER_DST_OPTIMAL layout.
-    unsafe {
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[barrier_to_shader],
-        );
-    }
-
-    // Submit and wait.
-    // SAFETY: cmd is a recording command buffer from begin_single_time_commands.
-    let submit_result = unsafe { vk.end_single_time_commands(cmd) };
-
-    // Clean up staging resources regardless of submit outcome.
-    // SAFETY: staging_buffer and staging_memory are valid and no longer in use
-    // (end_single_time_commands waits for queue idle).
-    unsafe {
         device.destroy_buffer(staging_buffer, None);
         device.free_memory(staging_memory, None);
     }
 
-    if let Err(e) = submit_result {
-        // SAFETY: image and image_memory are valid.
+    if let Err(e) = upload {
+        // SAFETY: image and image_memory are valid and not used by any submission.
         unsafe {
             device.destroy_image(image, None);
             device.free_memory(image_memory, None);
         }
-        if e == vk::Result::ERROR_DEVICE_LOST {
-            return Err(VulkanError::DeviceLost);
-        }
-        return Err(VulkanError::TextureUpload(format!(
-            "atlas command submission: {e}"
-        )));
+        return Err(e);
     }
 
     // --- Create image view ---
@@ -885,6 +750,204 @@ pub fn upload_gif_atlas(
         width: atlas_width,
         height: atlas_height,
     })
+}
+
+/// Record and submit the chunked staging copies of a GIF atlas.
+///
+/// One submit is issued per chunk, and copies inside a chunk read distinct
+/// `buffer_offset`s, so no frame can observe another frame's staged pixels.
+///
+/// # Safety
+/// `image` and `staging_buffer` must be valid handles created by `vk`'s device,
+/// and `mapped` must be a mapped pointer valid for at least `staging_bytes`.
+#[allow(clippy::too_many_arguments)]
+unsafe fn record_atlas_upload(
+    vk: &VulkanContext,
+    image: vk::Image,
+    staging_buffer: vk::Buffer,
+    staging_bytes: usize,
+    mapped: *mut u8,
+    frame_bytes: usize,
+    frame_width: u32,
+    plan: &GifAtlasPlan,
+    get_frame: &mut impl FnMut(usize) -> Result<Vec<u8>, String>,
+) -> Result<(), VulkanError> {
+    let device = &vk.device;
+    let frames_per_chunk = (staging_bytes / frame_bytes.max(1)).max(1);
+    let mut slot_base = 0usize;
+    let mut first_chunk = true;
+
+    for chunk in plan.kept_indices.chunks(frames_per_chunk) {
+        // SAFETY: VulkanContext guarantees a valid command pool and device.
+        let cmd = unsafe {
+            vk.begin_single_time_commands().map_err(|e| {
+                VulkanError::TextureUpload(format!("begin command buffer: {e}"))
+            })?
+        };
+
+        if first_chunk {
+            first_chunk = false;
+            // UNDEFINED -> TRANSFER_DST_OPTIMAL
+            // SAFETY: cmd is recording and image is valid.
+            unsafe {
+                atlas_barrier(
+                    device,
+                    cmd,
+                    image,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::AccessFlags::empty(),
+                    vk::AccessFlags::TRANSFER_WRITE,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::TRANSFER,
+                );
+            }
+        }
+
+        for (slot_in_chunk, &frame_idx) in chunk.iter().enumerate() {
+            let data = match get_frame(frame_idx) {
+                Ok(d) => d,
+                Err(e) => {
+                    // SAFETY: cmd is recording and not submitted.
+                    unsafe { device.free_command_buffers(vk.command_pool, &[cmd]) };
+                    return Err(VulkanError::TextureUpload(format!(
+                        "failed to produce GIF frame {frame_idx}: {e}"
+                    )));
+                }
+            };
+            if data.len() < frame_bytes {
+                // SAFETY: cmd is recording and not submitted.
+                unsafe { device.free_command_buffers(vk.command_pool, &[cmd]) };
+                return Err(VulkanError::TextureUpload(format!(
+                    "GIF frame {frame_idx} is {} bytes, expected at least {frame_bytes}",
+                    data.len()
+                )));
+            }
+
+            // SAFETY: the copy stays inside the mapped staging allocation and
+            // `data` holds at least `frame_bytes` readable bytes.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    mapped.add(slot_in_chunk * frame_bytes),
+                    frame_bytes,
+                );
+            }
+
+            // Copy this frame's stage slot -> its horizontal atlas slot.
+            let region = vk::BufferImageCopy {
+                buffer_offset: (slot_in_chunk * frame_bytes) as u64,
+                buffer_row_length: 0,
+                buffer_image_height: 0,
+                image_subresource: vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                image_offset: vk::Offset3D {
+                    x: ((slot_base + slot_in_chunk) as u32 * frame_width) as i32,
+                    y: 0,
+                    z: 0,
+                },
+                image_extent: vk::Extent3D {
+                    width: frame_width,
+                    height: plan.atlas_height,
+                    depth: 1,
+                },
+            };
+
+            // SAFETY: cmd is recording; staging_buffer holds this frame's
+            // pixels at `buffer_offset`; the atlas is in TRANSFER_DST_OPTIMAL.
+            unsafe {
+                device.cmd_copy_buffer_to_image(
+                    cmd,
+                    staging_buffer,
+                    image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[region],
+                );
+            }
+        }
+
+        // SAFETY: cmd was recorded above and is submitted at most once.
+        if let Err(e) = unsafe { vk.end_single_time_commands(cmd) } {
+            return Err(atlas_submit_error(e));
+        }
+
+        slot_base += chunk.len();
+    }
+
+    // TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
+    // SAFETY: VulkanContext guarantees a valid command pool and device.
+    let cmd = unsafe {
+        vk.begin_single_time_commands()
+            .map_err(|e| VulkanError::TextureUpload(format!("begin command buffer: {e}")))?
+    };
+
+    // SAFETY: cmd is recording and image is valid.
+    unsafe {
+        atlas_barrier(
+            device,
+            cmd,
+            image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::AccessFlags::TRANSFER_WRITE,
+            vk::AccessFlags::SHADER_READ,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+        );
+    }
+
+    // SAFETY: cmd was recorded above and is submitted at most once.
+    unsafe { vk.end_single_time_commands(cmd) }.map_err(atlas_submit_error)
+}
+
+fn atlas_submit_error(e: vk::Result) -> VulkanError {
+    if e == vk::Result::ERROR_DEVICE_LOST {
+        VulkanError::DeviceLost
+    } else {
+        VulkanError::TextureUpload(format!("atlas command submission: {e}"))
+    }
+}
+
+/// Record a full-image layout transition for the atlas image.
+///
+/// # Safety
+/// `cmd` must be recording and `image` must be a valid image owned by the device.
+#[allow(clippy::too_many_arguments)]
+unsafe fn atlas_barrier(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+    src_access: vk::AccessFlags,
+    dst_access: vk::AccessFlags,
+    src_stage: vk::PipelineStageFlags,
+    dst_stage: vk::PipelineStageFlags,
+) {
+    let barrier = vk::ImageMemoryBarrier::default()
+        .src_access_mask(src_access)
+        .dst_access_mask(dst_access)
+        .old_layout(old_layout)
+        .new_layout(new_layout)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        });
+
+    // SAFETY: caller guarantees cmd is recording and image is valid.
+    unsafe {
+        device.cmd_pipeline_barrier(cmd, src_stage, dst_stage, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+    }
 }
 
 /// Create a texture sampler with linear filtering and clamp-to-edge addressing.
