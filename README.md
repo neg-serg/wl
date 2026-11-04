@@ -91,6 +91,18 @@ ignored by default because it needs a live Wayland session and a Vulkan device:
 cargo test -p wl-daemon gif_atlas_tiles -- --ignored --nocapture
 ```
 
+## Troubleshooting
+
+The daemon logs at `info` by default; with systemd those lines go to
+`journalctl --user -u wl-daemon`. For verbose diagnostics (swapchain formats,
+per-frame render paths) run it directly:
+
+```sh
+RUST_LOG=debug wl-daemon
+```
+
+or add `Environment=RUST_LOG=debug` to a systemd drop-in.
+
 ## Architecture
 
 ```

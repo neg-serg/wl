@@ -363,13 +363,18 @@ impl Swapchain {
             .ok_or_else(|| VulkanError::Other("no surface formats available".to_string()))?;
 
         tracing::info!(
-            "swapchain format: {:?}, color_space: {:?} (available: {:?})",
-            chosen.format,
-            chosen.color_space,
-            formats
+            format = ?chosen.format,
+            color_space = ?chosen.color_space,
+            "swapchain format chosen"
+        );
+        // The full advertised list is only useful when debugging format
+        // selection; it used to be one enormous info line in every journal.
+        tracing::debug!(
+            available = ?formats
                 .iter()
-                .map(|f| (f.format, f.color_space))
-                .collect::<Vec<_>>()
+                .map(|format| (format.format, format.color_space))
+                .collect::<Vec<_>>(),
+            "surface formats advertised by the compositor"
         );
 
         Ok(chosen)

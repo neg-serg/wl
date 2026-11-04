@@ -61,7 +61,9 @@ async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+                // The daemon has useful lifecycle logs at info level (device, rotation,
+                // recovery). Debug turns on the very verbose diagnostics.
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -2705,6 +2707,14 @@ fn handle_rotate_stop(daemon: &mut DaemonState) -> IpcResponse {
 }
 
 fn handle_rotate_next(daemon: &mut DaemonState) -> IpcResponse {
+    // A manual skip shows the image immediately; upscaling only runs for the
+    // scheduled rotation (it takes seconds and would make "next" feel broken).
+    if let Some(rotation) = daemon.rotation.as_ref()
+        && rotation_wants_upscale(rotation)
+    {
+        debug!("rotation: skipping immediately, the upscaler only runs on scheduled rotations");
+    }
+
     let (no_notify, notify_path, resize, transition) = match daemon.rotation.as_ref() {
         Some(r) => (r.no_notify, r.notify_path.clone(), r.resize, r.transition),
         None => {
