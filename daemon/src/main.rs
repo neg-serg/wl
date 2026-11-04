@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(dead_code))]
+
 mod animation;
 mod ipc;
 mod output;
@@ -24,11 +26,11 @@ use wl_common::ipc_types::*;
 use crate::ipc::IpcServer;
 use crate::output::{Output, Wallpaper};
 use crate::state::DaemonState;
-use crate::vulkan::{VulkanContext, VulkanError};
 use crate::vulkan::pipeline::{TransitionKind, TransitionPipeline, WallpaperPipeline};
 use crate::vulkan::shaders::ShaderModules;
 use crate::vulkan::swapchain::Swapchain;
 use crate::vulkan::texture;
+use crate::vulkan::{VulkanContext, VulkanError};
 use crate::wayland::WaylandState;
 
 /// Check that no other instance of wl-daemon is running using an abstract
@@ -434,7 +436,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let lost = wl.lost_surface_indices();
         if !lost.is_empty() {
             // SAFETY: GPU must be idle before destroying swapchain resources.
-            unsafe { let _ = daemon.vk.device.device_wait_idle(); }
+            unsafe {
+                let _ = daemon.vk.device.device_wait_idle();
+            }
 
             for idx in &lost {
                 // Do not clear surface_lost until recovery succeeds.  If a
@@ -476,7 +480,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     unsafe {
                         // Free command buffer if pending
                         if let Some(old_cmd) = output.last_command_buffer.take() {
-                            daemon.vk.device.free_command_buffers(daemon.vk.command_pool, &[old_cmd]);
+                            daemon
+                                .vk
+                                .device
+                                .free_command_buffers(daemon.vk.command_pool, &[old_cmd]);
                         }
                         // Destroy framebuffers
                         for fb in output.framebuffers.drain(..) {
@@ -645,7 +652,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         match output.swapchain.as_mut().map(|sc| {
-                            sc.recreate(&daemon.vk.device, daemon.vk.physical_device, eff_w.max(1), eff_h.max(1))
+                            sc.recreate(
+                                &daemon.vk.device,
+                                daemon.vk.physical_device,
+                                eff_w.max(1),
+                                eff_h.max(1),
+                            )
                         }) {
                             Some(Ok(())) => {
                                 let sc = output.swapchain.as_ref().unwrap();
@@ -692,7 +704,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         output.surface_lost = true;
                         unsafe {
                             if let Some(old_cmd) = output.last_command_buffer.take() {
-                                daemon.vk.device.free_command_buffers(daemon.vk.command_pool, &[old_cmd]);
+                                daemon
+                                    .vk
+                                    .device
+                                    .free_command_buffers(daemon.vk.command_pool, &[old_cmd]);
                             }
                             for fb in output.framebuffers.drain(..) {
                                 daemon.vk.device.destroy_framebuffer(fb, None);
@@ -718,7 +733,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         if presented_any {
             continuous_presents += 1;
             // 600 ticks is roughly ten seconds of presenting on every single tick.
-            if continuous_presents == 600 || continuous_presents % 6000 == 0 {
+            if continuous_presents == 600 || continuous_presents.is_multiple_of(6000) {
                 warn!(
                     frames = continuous_presents,
                     "presented on every loop tick; a redraw flag is probably stuck"
@@ -777,7 +792,9 @@ fn mem_total_bytes() -> Option<u64> {
 /// Wallpaper textures and descriptor sets are preserved.
 fn teardown_output_surfaces(daemon: &mut DaemonState) {
     // SAFETY: GPU must be idle before destroying swapchain resources.
-    unsafe { let _ = daemon.vk.device.device_wait_idle(); }
+    unsafe {
+        let _ = daemon.vk.device.device_wait_idle();
+    }
 
     for output in daemon.outputs.values_mut() {
         unsafe {
@@ -989,11 +1006,7 @@ fn complete_transition(daemon: &mut DaemonState, output_name: &str) {
     }
     // Only the old texture is freed: the new one is shared with
     // output.wallpaper.texture (set when the transition started).
-    cancel_transition(
-        &daemon.vk,
-        daemon.transition_pipeline.as_ref(),
-        output,
-    );
+    cancel_transition(&daemon.vk, daemon.transition_pipeline.as_ref(), output);
 
     // Update descriptor set to point to the wallpaper's texture (which has new_texture's handles)
     if let (Some(ds), Some(pipeline), Some(wp)) =
@@ -1317,7 +1330,7 @@ fn handle_img(
                 }
             };
             let mut stream_idx = 0usize;
-            let atlas_tex = match texture::upload_gif_atlas(
+            let mut atlas_tex = match texture::upload_gif_atlas(
                 &daemon.vk,
                 &plan,
                 frame_w,
@@ -1392,6 +1405,8 @@ fn handle_img(
                         Ok(ds) => ds,
                         Err(e) => {
                             warn!(output = %name, "failed to allocate descriptor set: {e}");
+                            // SAFETY: the atlas was uploaded but never published.
+                            unsafe { atlas_tex.destroy(&daemon.vk.device) };
                             continue;
                         }
                     },
@@ -1468,8 +1483,8 @@ fn handle_img(
             debug!(
                 total_frames = info.frame_count,
                 kept_frames = plan.kept_indices.len(),
-                atlas_mib = (plan.atlas_width as u64 * plan.atlas_height as u64 * 4)
-                    / (1024 * 1024),
+                atlas_mib =
+                    (plan.atlas_width as u64 * plan.atlas_height as u64 * 4) / (1024 * 1024),
                 rss_mib = rss / (1024 * 1024),
                 "gif wallpaper loaded (streaming)"
             );
@@ -1555,7 +1570,8 @@ fn set_static_wallpaper(
         }
     }
     // `None` means "use the source pixels as they are".
-    let prepared: Vec<((u32, u32), Option<Vec<u8>>)> = targets
+    type PreparedTexture = ((u32, u32), Option<Vec<u8>>);
+    let prepared: Vec<PreparedTexture> = targets
         .iter()
         .map(|&(tw, th)| {
             if (tw, th) == (width, height) {
@@ -1597,7 +1613,7 @@ fn set_static_wallpaper(
             None => (width, height, data),
         };
 
-        let gpu_tex = match texture::upload_rgba8_texture(&daemon.vk, pixels, tex_w, tex_h) {
+        let mut gpu_tex = match texture::upload_rgba8_texture(&daemon.vk, pixels, tex_w, tex_h) {
             Ok(tex) => tex,
             Err(VulkanError::DeviceLost) => {
                 // The logical device is dead; staying alive just retries failed
@@ -1615,10 +1631,38 @@ fn set_static_wallpaper(
 
         let pipeline = daemon.pipeline.as_ref().unwrap();
 
+        // A typo in `--outputs` (or a monitor that vanished mid-command) used to
+        // upload the texture and then drop it without destroying it, leaking VRAM
+        // on every attempt.
+        if !daemon.outputs.contains_key(name) {
+            warn!(output = %name, "unknown output, dropping the uploaded texture");
+            // SAFETY: the texture was uploaded but never published.
+            unsafe { gpu_tex.destroy(&daemon.vk.device) };
+            continue;
+        }
+
         if let Some(output) = daemon.outputs.get_mut(name) {
-            let should_transition = transition_kind.is_some()
+            let mut should_transition = transition_kind.is_some()
                 && output.wallpaper.is_some()
                 && daemon.transition_pipeline.is_some();
+
+            // Allocate the transition descriptor set before touching the output:
+            // failing halfway would leave the old animation unwound and the new
+            // texture owned by a transition that can never draw.
+            let mut transition_ds = None;
+            if should_transition {
+                let tp = daemon.transition_pipeline.as_ref().unwrap();
+                match tp.allocate_descriptor_set(&daemon.vk.device) {
+                    Ok(ds) => transition_ds = Some(ds),
+                    Err(e) => {
+                        warn!(
+                            output = %name,
+                            "failed to allocate transition descriptor: {e}; setting the wallpaper without a transition"
+                        );
+                        should_transition = false;
+                    }
+                }
+            }
 
             if should_transition {
                 let kind = transition_kind.unwrap();
@@ -1663,22 +1707,15 @@ fn set_static_wallpaper(
                     resize,
                 );
 
-                if let Some(ref tp) = daemon.transition_pipeline {
-                    match tp.allocate_descriptor_set(&daemon.vk.device) {
-                        Ok(ds) => {
-                            TransitionPipeline::update_descriptor_set(
-                                &daemon.vk.device,
-                                ds,
-                                t.old_texture.view,
-                                t.new_texture.view,
-                                tp.sampler,
-                            );
-                            t.descriptor_set = Some(ds);
-                        }
-                        Err(e) => {
-                            warn!(output = %name, "failed to allocate transition descriptor: {e}");
-                        }
-                    }
+                if let (Some(ds), Some(tp)) = (transition_ds, daemon.transition_pipeline.as_ref()) {
+                    TransitionPipeline::update_descriptor_set(
+                        &daemon.vk.device,
+                        ds,
+                        t.old_texture.view,
+                        t.new_texture.view,
+                        tp.sampler,
+                    );
+                    t.descriptor_set = Some(ds);
                 }
 
                 let new_wallpaper = Wallpaper {
@@ -1716,6 +1753,8 @@ fn set_static_wallpaper(
                         Ok(ds) => ds,
                         Err(e) => {
                             warn!(output = %name, "failed to allocate descriptor set: {e}");
+                            // SAFETY: the texture was uploaded but never published.
+                            unsafe { gpu_tex.destroy(&daemon.vk.device) };
                             continue;
                         }
                     },
@@ -1853,6 +1892,15 @@ fn handle_rotate_start(
         return IpcResponse::Error {
             message: "interval must be greater than 0".to_string(),
         };
+    }
+
+    if upscale_mode.is_some() || upscale_cmd.is_some() || upscale_scale.is_some() {
+        // Be honest instead of silently dropping the flags: the daemon only
+        // swaps wallpapers, upscaling happens in the client.
+        warn!(
+            "rotation persists --upscale settings but does not upscale images; \
+             use `wl img`/`wl random` for a one-off upscaled wallpaper"
+        );
     }
 
     let candidates = rotation::RotationState::new_cycle(&directories);

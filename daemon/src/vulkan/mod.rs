@@ -58,9 +58,7 @@ impl VulkanContext {
 
         // Log GPU info and VRAM for diagnostics
         {
-            let name = unsafe {
-                CStr::from_ptr(physical_device_properties.device_name.as_ptr())
-            };
+            let name = unsafe { CStr::from_ptr(physical_device_properties.device_name.as_ptr()) };
             let mut device_local_mb = 0u64;
             for i in 0..physical_device_memory_properties.memory_type_count {
                 let heap_idx =

@@ -607,11 +607,13 @@ pub fn upload_gif_atlas(
 
     // SAFETY: device is valid; staging_buffer_info is properly initialized.
     let staging_buffer = unsafe {
-        device.create_buffer(&staging_buffer_info, None).map_err(|e| {
-            device.destroy_image(image, None);
-            device.free_memory(image_memory, None);
-            VulkanError::TextureUpload(format!("atlas staging buffer creation: {e}"))
-        })?
+        device
+            .create_buffer(&staging_buffer_info, None)
+            .map_err(|e| {
+                device.destroy_image(image, None);
+                device.free_memory(image_memory, None);
+                VulkanError::TextureUpload(format!("atlas staging buffer creation: {e}"))
+            })?
     };
 
     // SAFETY: staging_buffer is a valid buffer just created above.
@@ -787,9 +789,8 @@ unsafe fn record_atlas_upload(
     for chunk in plan.kept_indices.chunks(frames_per_chunk) {
         // SAFETY: VulkanContext guarantees a valid command pool and device.
         let cmd = unsafe {
-            vk.begin_single_time_commands().map_err(|e| {
-                VulkanError::TextureUpload(format!("begin command buffer: {e}"))
-            })?
+            vk.begin_single_time_commands()
+                .map_err(|e| VulkanError::TextureUpload(format!("begin command buffer: {e}")))?
         };
 
         if first_chunk {
@@ -953,7 +954,15 @@ unsafe fn atlas_barrier(
 
     // SAFETY: caller guarantees cmd is recording and image is valid.
     unsafe {
-        device.cmd_pipeline_barrier(cmd, src_stage, dst_stage, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+        device.cmd_pipeline_barrier(
+            cmd,
+            src_stage,
+            dst_stage,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[barrier],
+        );
     }
 }
 
@@ -1026,7 +1035,6 @@ mod tests {
             }
         }
     }
-}
 
     #[test]
     fn staging_chunks_fit_the_budget_and_never_go_empty() {
@@ -1041,10 +1049,7 @@ mod tests {
         // frame inside one submit read a distinct offset.
         for frame_bytes in [16usize, 1024, 64 * 1024, 1024 * 1024] {
             let per_chunk = staging_frames_per_chunk(frame_bytes, 10_000);
-            assert!(
-                per_chunk <= 10_000,
-                "chunk {per_chunk} exceeds frame count"
-            );
+            assert!(per_chunk <= 10_000, "chunk {per_chunk} exceeds frame count");
             assert!(
                 per_chunk.saturating_mul(frame_bytes) <= ATLAS_STAGING_BUDGET_BYTES
                     || per_chunk == 1,
@@ -1052,3 +1057,4 @@ mod tests {
             );
         }
     }
+}

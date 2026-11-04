@@ -188,7 +188,10 @@ mod tests {
         // 4000 days is over the 10 year cap.
         assert!(parse_duration("4000d").is_err());
         // The cap itself still parses.
-        assert_eq!(parse_duration("3650d").unwrap(), Duration::from_secs(3650 * 86_400));
+        assert_eq!(
+            parse_duration("3650d").unwrap(),
+            Duration::from_secs(3650 * 86_400)
+        );
     }
 
     #[test]

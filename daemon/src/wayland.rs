@@ -403,11 +403,10 @@ impl WaylandState {
             .outputs()
             .iter()
             .find(|o| o.name.as_deref() == Some(output_name))
+            && let Some(ref surface) = output.surface
         {
-            if let Some(ref surface) = output.surface {
-                surface.damage_buffer(0, 0, i32::MAX, i32::MAX);
-                surface.commit();
-            }
+            surface.damage_buffer(0, 0, i32::MAX, i32::MAX);
+            surface.commit();
         }
     }
 
