@@ -145,7 +145,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             };
             send_and_check(cmd).await
         }
-        Commands::Query | Commands::List => {
+        Commands::Query { json } | Commands::List { json } => {
             let mut client = connect_or_error().await?;
             let response = client
                 .send_command(&IpcCommand::Query)
@@ -154,6 +154,12 @@ async fn run(cli: Cli) -> Result<(), String> {
 
             match response {
                 IpcResponse::QueryResult { outputs } => {
+                    if json {
+                        let rendered = serde_json::to_string_pretty(&outputs)
+                            .map_err(|e| format!("failed to encode query result: {e}"))?;
+                        println!("{rendered}");
+                        return Ok(());
+                    }
                     for info in outputs {
                         let path = info.wallpaper_path.as_deref().unwrap_or("(none)");
                         let dims = info

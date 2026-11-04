@@ -31,11 +31,11 @@ pub enum Commands {
         #[arg(long)]
         upscale: Option<UpscaleMode>,
 
-        /// Custom upscaler command (with {input} and {output} placeholders)
+        /// Custom upscaler command, run through `sh -c` after substituting {input} and {output}
         #[arg(long)]
         upscale_cmd: Option<String>,
 
-        /// Force upscale factor (2 or 4)
+        /// Force upscale factor (2, 4, 8 or 16; default: fit to the output resolution)
         #[arg(long)]
         upscale_scale: Option<u8>,
 
@@ -92,10 +92,18 @@ pub enum Commands {
     },
 
     /// Query current wallpaper state
-    Query,
+    Query {
+        /// Print the result as JSON (for status bars and scripts)
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Alias for query
-    List,
+    List {
+        /// Print the result as JSON (for status bars and scripts)
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Restore wallpapers from previous session
     Restore,
@@ -137,11 +145,11 @@ pub enum Commands {
         #[arg(long)]
         upscale: Option<UpscaleMode>,
 
-        /// Custom upscaler command (with {input} and {output} placeholders)
+        /// Custom upscaler command, run through `sh -c` after substituting {input} and {output}
         #[arg(long)]
         upscale_cmd: Option<String>,
 
-        /// Force upscale factor (2 or 4)
+        /// Force upscale factor (2, 4, 8 or 16; default: fit to the output resolution)
         #[arg(long)]
         upscale_scale: Option<u8>,
 
@@ -247,11 +255,11 @@ pub enum RotateAction {
         #[arg(long)]
         upscale: Option<UpscaleMode>,
 
-        /// Custom upscaler command (with {input} and {output} placeholders)
+        /// Custom upscaler command, run through `sh -c` after substituting {input} and {output}
         #[arg(long)]
         upscale_cmd: Option<String>,
 
-        /// Force upscale factor (2 or 4)
+        /// Force upscale factor (2, 4, 8 or 16; default: fit to the output resolution)
         #[arg(long)]
         upscale_scale: Option<u8>,
 
