@@ -752,7 +752,7 @@ mod tests {
             let frame = frame.unwrap();
             assert_eq!(frame.data.len(), 6 * 4 * 4);
             // Every pixel is the frame's solid color (opaque).
-            for px in frame.data.chunks_exact(4) {
+            for px in frame.data.as_chunks::<4>().0 {
                 assert_eq!(
                     px,
                     &[
